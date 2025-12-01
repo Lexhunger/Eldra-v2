@@ -84,14 +84,14 @@ The Waveshare ESP32-S3 2.8" Round Display is an integrated board with the displa
 
 | Signal    | GPIO | Description          |
 |-----------|------|----------------------|
-| HSYNC     | 46   | Horizontal sync      |
-| VSYNC     | 3    | Vertical sync        |
-| DE        | 5    | Data enable          |
-| PCLK      | 7    | Pixel clock          |
+| HSYNC     | 39   | Horizontal sync      |
+| VSYNC     | 40   | Vertical sync        |
+| DE        | 41   | Data enable          |
+| PCLK      | 42   | Pixel clock          |
 | Backlight | 2    | LCD backlight        |
-| B0-B4     | 14,38,18,17,10 | Blue data   |
-| G0-G5     | 39,0,45,48,47,21 | Green data |
-| R0-R4     | 1,9,46,11,12 | Red data      |
+| B0-B4     | 15,7,6,5,4     | Blue data    |
+| G0-G5     | 9,46,3,8,16,1  | Green data   |
+| R0-R4     | 14,21,47,48,45 | Red data     |
 
 ## API Reference
 

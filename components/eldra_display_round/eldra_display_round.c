@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
+#include "esp_heap_caps.h"
 #include "driver/gpio.h"
 #include <string.h>
 
@@ -26,29 +27,29 @@ static const char *TAG = "eldra_display";
 #define DISPLAY_PCLK_HZ    (16 * 1000 * 1000)
 
 /* GPIO pin assignments for Waveshare ESP32-S3 2.8" Round Display */
-#define PIN_HSYNC          GPIO_NUM_46
-#define PIN_VSYNC          GPIO_NUM_3
-#define PIN_DE             GPIO_NUM_5
-#define PIN_PCLK           GPIO_NUM_7
+#define PIN_HSYNC          GPIO_NUM_39
+#define PIN_VSYNC          GPIO_NUM_40
+#define PIN_DE             GPIO_NUM_41
+#define PIN_PCLK           GPIO_NUM_42
 #define PIN_BACKLIGHT      GPIO_NUM_2
 
 /* RGB565 data pins (directly mapped to GPIO) */
-#define PIN_DATA0          GPIO_NUM_14  /* B0 */
-#define PIN_DATA1          GPIO_NUM_38  /* B1 */
-#define PIN_DATA2          GPIO_NUM_18  /* B2 */
-#define PIN_DATA3          GPIO_NUM_17  /* B3 */
-#define PIN_DATA4          GPIO_NUM_10  /* B4 */
-#define PIN_DATA5          GPIO_NUM_39  /* G0 */
-#define PIN_DATA6          GPIO_NUM_0   /* G1 */
-#define PIN_DATA7          GPIO_NUM_45  /* G2 */
-#define PIN_DATA8          GPIO_NUM_48  /* G3 */
-#define PIN_DATA9          GPIO_NUM_47  /* G4 */
-#define PIN_DATA10         GPIO_NUM_21  /* G5 */
-#define PIN_DATA11         GPIO_NUM_1   /* R0 */
-#define PIN_DATA12         GPIO_NUM_9   /* R1 */
-#define PIN_DATA13         GPIO_NUM_46  /* R2 - shared with HSYNC on some boards */
-#define PIN_DATA14         GPIO_NUM_11  /* R3 */
-#define PIN_DATA15         GPIO_NUM_12  /* R4 */
+#define PIN_DATA0          GPIO_NUM_15  /* B0 */
+#define PIN_DATA1          GPIO_NUM_7   /* B1 */
+#define PIN_DATA2          GPIO_NUM_6   /* B2 */
+#define PIN_DATA3          GPIO_NUM_5   /* B3 */
+#define PIN_DATA4          GPIO_NUM_4   /* B4 */
+#define PIN_DATA5          GPIO_NUM_9   /* G0 */
+#define PIN_DATA6          GPIO_NUM_46  /* G1 */
+#define PIN_DATA7          GPIO_NUM_3   /* G2 */
+#define PIN_DATA8          GPIO_NUM_8   /* G3 */
+#define PIN_DATA9          GPIO_NUM_16  /* G4 */
+#define PIN_DATA10         GPIO_NUM_1   /* G5 */
+#define PIN_DATA11         GPIO_NUM_14  /* R0 */
+#define PIN_DATA12         GPIO_NUM_21  /* R1 */
+#define PIN_DATA13         GPIO_NUM_47  /* R2 */
+#define PIN_DATA14         GPIO_NUM_48  /* R3 */
+#define PIN_DATA15         GPIO_NUM_45  /* R4 */
 
 /* Frame buffer size */
 #define FB_SIZE            (DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t))

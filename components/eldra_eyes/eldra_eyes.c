@@ -18,7 +18,8 @@ static const char *TAG = "eldra_eyes";
  * 8-color RGB565 palette
  * Colors are stored in RGB565 format: RRRRRGGGGGGBBBBB
  */
-static const uint16_t s_palette[8] = {
+#define PALETTE_SIZE 8
+static const uint16_t s_palette[PALETTE_SIZE] = {
     0x0000,  /* BLACK   - 0 */
     0xFFFF,  /* WHITE   - 1 */
     0x001F,  /* BLUE    - 2 */
@@ -125,7 +126,7 @@ esp_err_t eldra_eyes_draw_centered(int scale)
 
 uint16_t eldra_eyes_get_palette_color(eldra_eye_color_t index)
 {
-    if (index >= 8) {
+    if (index >= PALETTE_SIZE) {
         return s_palette[0];
     }
     return s_palette[index];
