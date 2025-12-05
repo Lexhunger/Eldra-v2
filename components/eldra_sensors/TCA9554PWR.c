@@ -2,29 +2,13 @@
 /*****************************************************  Operation register REG   ****************************************************/   
 uint8_t Read_REG(uint8_t REG)                                // Read the value of the TCA9554PWR register REG
 {
-    uint8_t bitsStatus = 0;                                                             
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();     
-    i2c_master_start(cmd);                                                             
-    i2c_master_write_byte(cmd, (TCA9554_ADDRESS << 1) | I2C_MASTER_WRITE, true); 
-    i2c_master_write_byte(cmd, REG, true);                                
-    i2c_master_start(cmd);       
-    i2c_master_write_byte(cmd, (TCA9554_ADDRESS << 1) | I2C_MASTER_READ, true); 
-    i2c_master_read_byte(cmd, &bitsStatus, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);                             
-    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS); 
-    i2c_cmd_link_delete(cmd);                                                          
-    return bitsStatus;                                                                
+    uint8_t bitsStatus = 0;
+    I2C_Read(TCA9554_ADDRESS, REG, &bitsStatus, 1);
+    return bitsStatus;
 }
 void Write_REG(uint8_t REG,uint8_t Data)                    // Write Data to the REG register of the TCA9554PWR
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();           
-    i2c_master_start(cmd);                                             
-    i2c_master_write_byte(cmd, (TCA9554_ADDRESS << 1) | I2C_MASTER_WRITE, true);    
-    i2c_master_write_byte(cmd, REG, true);                                           
-    i2c_master_write_byte(cmd, Data, true);  
-    i2c_master_stop(cmd);     
-    i2c_master_cmd_begin(I2C_MASTER_NUM,cmd,I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);                                                           
+    I2C_Write(TCA9554_ADDRESS, REG, &Data, 1);
 }
 /********************************************************** Set EXIO mode **********************************************************/       
 void Mode_EXIO(uint8_t Pin,uint8_t State)                 // Set the mode of the TCA9554PWR Pin. The default is Output mode (output mode or input mode). State: 0= Output mode 1= input mode    

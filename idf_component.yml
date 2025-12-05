@@ -1,0 +1,5 @@
+version: "0.1.0"
+description: Eldra-V2 firmware
+dependencies:
+  idf: ">=5.5.0"
+  lvgl/lvgl: "^8.3.11"

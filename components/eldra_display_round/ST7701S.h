@@ -10,7 +10,6 @@
 #include "driver/ledc.h"
 
 #include "TCA9554PWR.h"
-#include "LVGL_Driver.h"
 
 #define SPI_METHOD 1
 #define IOEXPANDER_METHOD 0

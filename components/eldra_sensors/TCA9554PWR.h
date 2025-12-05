@@ -1,8 +1,6 @@
 #pragma once
-
-
 #include <stdio.h>
-#include "driver/i2c.h"
+#include "I2C_Driver.h"
 
 #include "Buzzer.h"
 
@@ -14,12 +12,6 @@
 #define TCA9554_EXIO6 0x06
 #define TCA9554_EXIO7 0x07
 #define TCA9554_EXIO8 0x08
-
-#define I2C_MASTER_SDA_IO           15     
-#define I2C_MASTER_SCL_IO           7  
-#define I2C_MASTER_NUM              0                       // Specify the I2C bus port to use. ESP32 chips typically have two I2C bus ports: I2C_NUM_0 and I2C_NUM_1
-#define I2C_MASTER_FREQ_HZ          400000                  // I2C master clock frequency, set to 400KHz 
-#define I2C_MASTER_TIMEOUT_MS       1000
 
 /****************************************************** The macro defines the TCA9554PWR information ******************************************************/ 
 

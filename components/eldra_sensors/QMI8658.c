@@ -5,7 +5,7 @@ IMUdata Gyro;
 
 uint8_t Device_addr ; // default for SD0/SA0 low, 0x6A if high
 acc_scale_t acc_scale = ACC_RANGE_4G;
-gyro_scale_t gyro_scale = GYR_RANGE_64DPS;
+gyro_scale_t gyro_scale = GYR_RANGE_512DPS;
 acc_odr_t acc_odr = acc_odr_norm_8000;
 gyro_odr_t gyro_odr = gyro_odr_norm_8000;
 sensor_state_t sensor_state = sensor_default;
@@ -284,7 +284,6 @@ void getGyroscope(void)
     Gyro.y = Gyro.y * gyroScales;
     Gyro.z = Gyro.z * gyroScales;
 }
-
 
 
 

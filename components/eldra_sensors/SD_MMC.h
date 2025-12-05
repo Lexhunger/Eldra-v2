@@ -10,7 +10,7 @@
 
 #include "esp_flash.h"
 
-#include "EXIO/TCA9554PWR.h"        
+#include "TCA9554PWR.h"        
 
 #define CONFIG_EXAMPLE_PIN_CLK  2
 #define CONFIG_EXAMPLE_PIN_CMD  1
