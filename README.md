@@ -10,6 +10,13 @@ Eldra-V2 is the next-generation rewrite of the Eldra desktop pet. The Waveshare 
 
 Goal: a cute-but-cosmic companion with expressive pixel-art eyes, procedural moods, subtle animation, ambient effects, and eventual light physical motion.
 
+## Eye Animation System (Eldra-V2)
+Eldra’s face is driven by a modular eye engine that swaps between two renderers: CHIBI mode uses tiny 11×11 pixel-art eyes (scaled up and redrawn in small regions), while ELDRITCH mode is a full-screen cosmic eye with layered textures and procedural pulses. The system is built to sustain 60 FPS on the round 480×480 RGB panel.
+
+Moods and rune modifiers steer idle clip selection, palette swaps, and how strongly the eyes react to sensors. A cowl-mounted magnet + reed switch controls the signature transformation: hat on keeps Eldra in CHIBI, hat off triggers an animated merge and reveal into ELDRITCH, with a mirrored sequence on return.
+
+Full design details—modes, moods, renderers, transform flow, assets, and roadmap—are documented in `docs/eldra_eyes_animation.md`.
+
 ## Project Goals
 **Phase 1 - Core Display + Eyes**
 - Render 11x11 pixel-art eyes with an 8-color RGB565 palette

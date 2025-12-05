@@ -10,6 +10,7 @@ Eldra_V2/
 |   |-- firmware/            # (reserved) firmware architecture/design docs
 |   |-- reference/           # Pin maps, palettes, conversions, file layout
 |   `-- roadmap.md           # Project phases and TODOs
+|-- managed_components/      # Third-party deps (e.g., LVGL) fetched by IDF component manager
 |-- main/                    # Application entry point
 |-- components/              # Modular components (display, eyes, sensors, mood, motion)
 |-- sdkconfig.defaults       # ESP-IDF defaults
@@ -17,4 +18,7 @@ Eldra_V2/
 `-- README.md                # Top-level project overview
 ```
 
-Use this file to keep directory purposes in sync with the README and CONTRIBUTING guides.
+Notes:
+- `managed_components/` is populated automatically from `idf_component.yml` (keep third-party libraries here).
+- `vendor_demo/` (removed) was a temporary import of vendor sample code; required drivers have been mirrored into `components/`.
+- Use this file to keep directory purposes in sync with the README and CONTRIBUTING guides.

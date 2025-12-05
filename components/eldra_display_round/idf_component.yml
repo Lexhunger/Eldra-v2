@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: Eldra display wrapper around vendor panel drivers (direct blit)
+dependencies:
+  idf: ">=5.5.0"
