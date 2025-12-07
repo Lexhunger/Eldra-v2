@@ -417,15 +417,16 @@ static bool example_on_vsync_event(esp_lcd_panel_handle_t panel, const esp_lcd_r
 }
 
 esp_lcd_panel_handle_t panel_handle = NULL;
+static ST7701S_handle s_st7701s = NULL;
 void LCD_Init(void)
 {
     /********************* LCD *********************/
     ST7701S_reset();
     ST7701S_CS_EN();
     vTaskDelay(pdMS_TO_TICKS(100));
-    ST7701S_handle st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
+    s_st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
     
-    ST7701S_screen_init(st7701s, 1);
+    ST7701S_screen_init(s_st7701s, 1);
     #if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
         ESP_LOGI(LCD_TAG, "Create semaphores");
         sem_vsync_end = xSemaphoreCreateBinary();
@@ -496,6 +497,22 @@ void LCD_Init(void)
     Backlight_Init();
 }
 
+/********************* Reinit helper *********************/
+esp_err_t ST7701S_reinit_sequence(void)
+{
+    if (!s_st7701s) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = ST7701S_reset();
+    if (err != ESP_OK) {
+        return err;
+    }
+    ST7701S_CS_EN();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ST7701S_screen_init(s_st7701s, 1);
+    return ESP_OK;
+}
+
 /********************* BackLight *********************/
 static void example_ledc_init(void)
 {
@@ -521,6 +538,8 @@ static void example_ledc_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
+
+// Vendor default backlight level at init (will be overridden by app_main).
 uint8_t LCD_Backlight = 70;
 void Backlight_Init(void)
 {
