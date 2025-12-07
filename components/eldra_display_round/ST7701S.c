@@ -521,6 +521,8 @@ static void example_ledc_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
+
+// Vendor default backlight level at init (will be overridden by app_main).
 uint8_t LCD_Backlight = 70;
 void Backlight_Init(void)
 {

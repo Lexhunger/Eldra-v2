@@ -21,6 +21,17 @@ void eldra_display_round_set_backlight(uint8_t level) {
     Set_Backlight(level);
 }
 
+esp_err_t eldra_display_round_reset_panel(void) {
+    if (!panel_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = esp_lcd_panel_reset(panel_handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return esp_lcd_panel_init(panel_handle);
+}
+
 int eldra_display_round_get_width(void) {
     return EXAMPLE_LCD_H_RES;
 }

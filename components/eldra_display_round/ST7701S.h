@@ -2,12 +2,12 @@
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "freertos/task.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "driver/ledc.h"
 
 #include "TCA9554PWR.h"
 
@@ -56,7 +56,6 @@
 #define EXAMPLE_LCD_NUM_FB             1
 #endif 
 
-
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
 #define LEDC_OUTPUT_IO          EXAMPLE_PIN_NUM_BK_LIGHT      // Define the output GPIO
@@ -70,7 +69,6 @@
 extern SemaphoreHandle_t sem_vsync_end;
 extern SemaphoreHandle_t sem_gui_ready;
 #endif
-
 
 extern esp_lcd_panel_handle_t panel_handle;
 extern uint8_t LCD_Backlight;

@@ -30,9 +30,18 @@ esp_err_t eldra_display_round_init(void);
  *
  * Pass-through to the vendor driver Set_Backlight.
  *
- * @param level Brightness 0–100 (clamped by the vendor driver if out of range).
+ * @param level Brightness 0-100 (clamped by the vendor driver if out of range).
  */
 void eldra_display_round_set_backlight(uint8_t level);
+
+/**
+ * @brief Reset and re-init the panel (RGB driver only; does not rerun ST7701S_screen_init).
+ *
+ * Useful for retrying bring-up if the first init occurred during a brownout.
+ *
+ * @return ESP_OK on success; error codes from esp_lcd_panel_reset/init otherwise.
+ */
+esp_err_t eldra_display_round_reset_panel(void);
 
 /**
  * @brief Get the configured panel width in pixels.

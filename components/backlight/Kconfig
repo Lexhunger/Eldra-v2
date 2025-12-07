@@ -1,0 +1,64 @@
+menu "Backlight"
+
+config BACKLIGHT_DEFAULT_PERCENT
+    int "Default backlight brightness (%)"
+    range 0 100
+    default 80
+    help
+        Target brightness applied after the LCD is initialized.
+        Kept below 100% to ease LiPo cold-boot inrush while staying visible.
+
+config BACKLIGHT_ENABLE_RAMP
+    bool "Ramp backlight brightness on enable"
+    default y
+    help
+        When enabled, brightness changes use a stepped ramp to avoid
+        current spikes and visible flicker.
+
+config BACKLIGHT_RAMP_STEP_PERCENT
+    int "Brightness step per ramp (%)"
+    range 1 20
+    default 2
+    help
+        Percent step applied on each ramp iteration. Smaller steps are
+        smoother but take longer to reach the target brightness.
+
+config BACKLIGHT_RAMP_STEP_MS
+    int "Delay between ramp steps (ms)"
+    range 1 1000
+    default 20
+    help
+        Time between ramp steps. Increase to further soften inrush.
+
+config BACKLIGHT_MAX_RAW_AT_FULL_PERCENT
+    int "LEDC raw duty value used for 100% brightness"
+    range 1 1023
+    default 1023
+    help
+        Caps the LEDC duty used for 100% brightness (use 1023 to allow full on).
+
+config BACKLIGHT_PWM_FREQ_HZ
+    int "Backlight PWM frequency (Hz)"
+    range 1000 20000
+    default 10000
+    help
+        PWM frequency for the backlight LEDC channel. 10 kHz avoids
+        audible noise while keeping LEDC timing accurate.
+
+config BACKLIGHT_BOOT_SETTLE_MS
+    int "Boot settle delay before LCD init (ms)"
+    range 0 1000
+    default 250
+    help
+        Extra delay right after reset with the backlight held off to let
+        3V3/BAT rails settle before driving the panel.
+
+config BACKLIGHT_DIAG_PERCENT
+    int "Backlight brightness during diagnostics (%)"
+    range 0 100
+    default 15
+    help
+        Brightness level used while showing diagnostic/error patterns
+        so the display stays visible without stressing the battery.
+
+endmenu
