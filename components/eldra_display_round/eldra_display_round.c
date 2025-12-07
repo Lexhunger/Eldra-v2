@@ -25,7 +25,12 @@ esp_err_t eldra_display_round_reset_panel(void) {
     if (!panel_handle) {
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = esp_lcd_panel_reset(panel_handle);
+    // Re-run the vendor ST7701S sequence to recover from brownout init glitches.
+    esp_err_t err = ST7701S_reinit_sequence();
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = esp_lcd_panel_reset(panel_handle);
     if (err != ESP_OK) {
         return err;
     }

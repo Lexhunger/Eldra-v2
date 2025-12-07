@@ -91,6 +91,7 @@ void ST7701S_WriteData(ST7701S_handle St7701S_handle, uint8_t data);//SPI write 
 esp_err_t ST7701S_CS_EN(void);//Enables SPI CS
 esp_err_t ST7701S_CS_Dis(void);//Disable SPI CS
 esp_err_t ST7701S_reset(void);// LCD Reset
+esp_err_t ST7701S_reinit_sequence(void);// Re-run ST7701S screen init on existing handle
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
