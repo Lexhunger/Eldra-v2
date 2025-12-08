@@ -1,6 +1,27 @@
 # Eldra-V2
 A cosmic-horror-cute desktop pet powered by ESP-IDF 5.5.1 and the Waveshare ESP32-S3 2.8" Round LCD board.
 
+## Project Overview
+Eldra is a small eldritch-cute desktop pet built on an ESP32-S3 with a round TFT display, sensors, haptics, and servos. It will juggle emotional states, react to touchless inputs, and express itself through animated eyes, vibration, audio chirps, and light motion while logging its inner life for later replay.
+
+## High-Level Architecture
+- **Emotion Engine (brain):** Tracks meters (hunger, happiness, energy, social, fear, eldritch charge) and selects a named state that drives animations and haptics.
+- **Comms & Logging Backbone:** BLE + IR inputs (RFID future), Wi-Fi server sync, and SD logging funnel events into a common command queue while exporting telemetry.
+- **Sensors:** IMU for motion/tilt/shake, ToF for proximity, reed switch for hood, hall sensor for magnets, plus other environmental sensors as they are added.
+- **Actuators:** Round display (eyes/expressions), buzzer for chirps, vibro motor for haptics, and PCA9685-driven servos for small motions and poses.
+
+## Development Roadmap
+1. **Emotion Engine Core:** Define emotion meters, state selection, and event-driven reactions with output hooks for animation and haptics.
+2. **Comms & Logging Backbone:** Build a shared command queue for BLE/IR/RFID/Wi-Fi inputs and a unified logging path to SD/server.
+3. **Virtual Inputs / Dev Controls:** Add developer controls to inject commands and simulate sensors for fast iteration.
+4. **Physical Sensors:** Integrate IMU, ToF, reed switch, hall sensors, and other inputs that feed the Emotion Engine.
+5. **Motion & Haptics:** Drive vibration motor and servos via PCA9685 for gestures, idle motion, and reactions.
+6. **Audio & Mic / Phrase Recognition:** Add buzzer chirps, expand audio playback, and experiment with phrase detection hooks.
+7. **Personality & Feature Modules:** Layer behaviors, routines, and contextual reactions on top of the Emotion Engine.
+8. **Internal Frame Prototype:** Build the internal mechanical frame and mounting points for electronics.
+9. **Body Shell Prototype:** Prototype the exterior shell for the “eldritch-cute” look and feel.
+10. **Hood Prototype:** Refine the magnetized hood/cowl mechanism with reed switch feedback and supporting animations.
+
 ## What is Eldra-V2?
 Eldra-V2 is the next-generation rewrite of the Eldra desktop pet. The Waveshare board provides:
 - 480x480 RGB parallel IPS panel (no SPI bottleneck)
@@ -11,11 +32,11 @@ Eldra-V2 is the next-generation rewrite of the Eldra desktop pet. The Waveshare 
 Goal: a cute-but-cosmic companion with expressive pixel-art eyes, procedural moods, subtle animation, ambient effects, and eventual light physical motion.
 
 ## Eye Animation System (Eldra-V2)
-Eldra’s face is driven by a modular eye engine that swaps between two renderers: CHIBI mode uses tiny 11×11 pixel-art eyes (scaled up and redrawn in small regions), while ELDRITCH mode is a full-screen cosmic eye with layered textures and procedural pulses. The system is built to sustain 60 FPS on the round 480×480 RGB panel.
+Eldra's face is driven by a modular eye engine that swaps between two renderers: CHIBI mode uses tiny 11x11 pixel-art eyes (scaled up and redrawn in small regions), while ELDRITCH mode is a full-screen cosmic eye with layered textures and procedural pulses. The system is built to sustain 60 FPS on the round 480x480 RGB panel.
 
 Moods and rune modifiers steer idle clip selection, palette swaps, and how strongly the eyes react to sensors. A cowl-mounted magnet + reed switch controls the signature transformation: hat on keeps Eldra in CHIBI, hat off triggers an animated merge and reveal into ELDRITCH, with a mirrored sequence on return.
 
-Full design details—modes, moods, renderers, transform flow, assets, and roadmap—are documented in `docs/eldra_eyes_animation.md`.
+Full design details - modes, moods, renderers, transform flow, assets, and roadmap - are documented in `docs/eldra_eyes_animation.md`.
 
 ## Project Goals
 **Phase 1 - Core Display + Eyes**
@@ -142,3 +163,6 @@ idf.py flash monitor
 
 ## License
 MIT License
+
+
+

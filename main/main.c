@@ -6,6 +6,9 @@
  */
 
 #include "eldra_display_round.h"
+#include "eldra_emotion.h"
+#include "eldra_comms.h"
+#include "eldra_logging.h"
 #include "eldra_eyes.h"
 #include "eldra_sensors.h"
 
@@ -26,6 +29,27 @@ static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
 }
 
 /**
+ * @brief Sketch of the future command/emotion plumbing without hardware drivers.
+ *        Compile-time guard prevents it from running unless explicitly enabled.
+ */
+static void run_emotion_backbone_demo(void) __attribute__((unused));
+static void run_emotion_backbone_demo(void) {
+    emotion_context_t emotion = {0};
+    uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+    log_init();
+    emotion_init(&emotion, start_ms);
+    comms_init();
+
+    for (;;) {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        emotion_on_tick(&emotion, now_ms);
+        comms_process_all_pending(&emotion, now_ms);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/**
  * @brief Application entry point.
  *
  * Boot order:
@@ -34,6 +58,13 @@ static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
  * 3) Render the static chibi eyes into a raw framebuffer and push to the panel.
  */
 void app_main(void) {
+#if defined(ELDRA_EMOTION_BACKBONE_DEMO)
+    run_emotion_backbone_demo();
+    return;
+#endif
+
+    log_init();
+
     if (eldra_sensors_init() != ESP_OK) {
         ESP_LOGE(TAG, "Sensor init failed; holding");
         goto fail_safe;
