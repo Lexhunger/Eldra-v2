@@ -16,6 +16,18 @@ typedef struct {
 - **Consumer:** Main app loop -> Emotion Engine event handlers.
 - **Shape:** Small ring buffer for now; pushes from ISRs/tasks, drained by the main loop.
 
+## Console / Command Router
+- UART0 console task feeds lines into a transport-agnostic command router that HTTP can reuse later.
+- Default commands:
+  - `LOGS [tag] [level] [limit]` – dump recent in-RAM logs (ring buffer of last 100 entries).
+  - `SETTIME <epoch_ms|dd/mm/yyyy-HH:MM:SS>` – set RTC from epoch or human format.
+  - `SETDATE dd/mm/yyyy` – set RTC date only.
+  - `SETCLOCK HH:MM:SS` – set RTC time only.
+  - `BAT` – show battery voltage/percent.
+  - `STATE` – show current emotion state/meters (if context provided).
+  - `FEED [type]`, `PET`, `PLAY`, `FORCESTATE <id>` – enqueue pet commands.
+- HTTP endpoints can call `comms_commands_process_line()` with the same strings to mirror console behavior.
+
 ### Initial Command Types
 - **FEED** (`arg0` = food type)
 - **PET**
@@ -31,7 +43,7 @@ typedef struct {
 - **Wi-Fi:** Pet pushes logs/state to a home server and polls for queued commands to enqueue locally.
 
 ## SD and Remote Logging
-All modules call `log_event(level, tag, msg)` rather than raw logging macros. Initially this wraps ESP-IDF logging; later it will:
+All modules call `log_event(level, tag, msg)` rather than raw logging macros. It keeps an in-RAM ring (last 100 entries) for quick console/HTTP retrieval via `LOGS`. Later it will:
 - Write to SD card with timestamps.
 - Optionally mirror to the home server alongside telemetry snapshots.
 

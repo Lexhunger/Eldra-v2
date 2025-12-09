@@ -27,7 +27,7 @@ Eldra's Emotion Engine keeps a set of bounded meters, resolves them into a named
 2. **SCARED** - `fear` above threshold or an active scare timer.
 3. **ELDRITCH** - `eldritch_charge` high enough to trigger the reveal posture.
 4. **HUNGRY** - `hunger` above threshold for a sustained period.
-5. **SLEEPY** - `energy` low (optionally battery low or late night once hardware hooks exist).
+5. **SLEEPY** - `energy` low or battery low (and later: late night once RTC hooks exist).
 6. **LONELY** - `social` meter low due to a lack of interaction.
 7. **SAD** - `happiness` low plus another need (hunger/social/energy) also low.
 8. **PLAYFUL** - `happiness` and `social` high with a recent play timestamp.

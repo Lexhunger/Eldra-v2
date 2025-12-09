@@ -26,6 +26,7 @@ idf_component_register(
         fatfs
         sdmmc
         spi_flash
+        eldra_logging
     PRIV_INCLUDE_DIRS
         ${IDF_PATH}/components/bt/include/esp32c3/include
         ${IDF_PATH}/components/bt/include

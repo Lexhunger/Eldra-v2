@@ -75,6 +75,7 @@
 #define THRESHOLD_ELDRITCH 80
 #define THRESHOLD_HUNGER 70
 #define THRESHOLD_ENERGY_SLEEPY 25
+#define THRESHOLD_BATTERY_SLEEPY 20
 #define THRESHOLD_SOCIAL_LONELY 25
 #define THRESHOLD_HAPPINESS_SAD 30
 #define THRESHOLD_HAPPINESS_HAPPY 70
@@ -165,7 +166,7 @@ static emotion_state_t emotion_select_state(const emotion_context_t *ctx, uint32
     if (ctx->hunger >= THRESHOLD_HUNGER) {
         return EMOTION_STATE_HUNGRY;
     }
-    if (ctx->energy <= THRESHOLD_ENERGY_SLEEPY) {
+    if (ctx->energy <= THRESHOLD_ENERGY_SLEEPY || ctx->battery_percent <= THRESHOLD_BATTERY_SLEEPY) {
         return EMOTION_STATE_SLEEPY;
     }
     if (ctx->social <= THRESHOLD_SOCIAL_LONELY) {
@@ -212,6 +213,7 @@ void emotion_init(emotion_context_t *ctx, uint32_t now_ms) {
     ctx->social = BASELINE_SOCIAL;
     ctx->fear = BASELINE_FEAR;
     ctx->eldritch_charge = BASELINE_ELDRITCH;
+    ctx->battery_percent = EMOTION_METER_MAX;
 
     ctx->current_state = EMOTION_STATE_NEUTRAL;
     ctx->previous_state = EMOTION_STATE_NEUTRAL;
@@ -219,6 +221,13 @@ void emotion_init(emotion_context_t *ctx, uint32_t now_ms) {
     ctx->last_tick_ms = now_ms;
     ctx->tick_accum_ms = 0U;
     ctx->eldritch_accum_ms = 0U;
+}
+
+void emotion_set_battery_percent(emotion_context_t *ctx, uint8_t percent) {
+    if (!ctx) {
+        return;
+    }
+    ctx->battery_percent = clamp_meter_int(percent);
 }
 
 void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {

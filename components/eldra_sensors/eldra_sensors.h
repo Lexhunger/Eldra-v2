@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "PCF85063.h"
 
 /**
  * @file eldra_sensors.h
@@ -42,6 +43,30 @@ typedef void (*eldra_sensors_imu_cb_t)(float gx_dps,
  * @brief Register a single IMU sample callback (overwrites previous).
  */
 void eldra_sensors_set_imu_callback(eldra_sensors_imu_cb_t cb);
+
+/**
+ * @brief Retrieve the latest measured battery voltage (volts).
+ */
+float eldra_sensors_get_battery_voltage(void);
+
+/**
+ * @brief Retrieve the latest battery percentage (0-100).
+ */
+uint8_t eldra_sensors_get_battery_percent(void);
+
+/**
+ * @brief Set the RTC datetime using the PCF85063 driver.
+ * @param time Pointer to datetime to set; expected to be a full date/time.
+ * @return ESP_OK on success, or ESP_ERR_INVALID_ARG on bad input.
+ */
+esp_err_t eldra_sensors_rtc_set(const datetime_t *time);
+
+/**
+ * @brief Read the current RTC datetime.
+ * @param out_time Destination for the current datetime.
+ * @return ESP_OK on success, or ESP_ERR_INVALID_ARG if out_time is NULL.
+ */
+esp_err_t eldra_sensors_rtc_get(datetime_t *out_time);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 /**
  * @file main.c
@@ -17,9 +20,23 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/uart.h"
 
 static const char *TAG = "app_main";
 static eldra_eyes_context_t *g_eyes_ctx = NULL;
+
+#if defined(ELDRA_DEBUG_SET_RTC)
+// Edit these values or define ELDRA_DEBUG_SET_RTC to set RTC once at boot for validation.
+static const datetime_t k_debug_rtc_time = {
+    .year = 2025,
+    .month = 1,
+    .day = 1,
+    .dotw = 3, // Wednesday
+    .hour = 12,
+    .minute = 0,
+    .second = 0,
+};
+#endif
 
 static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
                          float ax_g, float ay_g, float az_g, uint32_t dt_ms) {
@@ -28,6 +45,9 @@ static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
     }
 }
 
+/**
+ * @brief Convert epoch milliseconds to datetime_t (UTC).
+ */
 /**
  * @brief Sketch of the future command/emotion plumbing without hardware drivers.
  *        Compile-time guard prevents it from running unless explicitly enabled.
@@ -38,11 +58,17 @@ static void run_emotion_backbone_demo(void) {
     uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
 
     log_init();
+    if (eldra_sensors_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Sensor init failed; cannot run emotion demo");
+        return;
+    }
     emotion_init(&emotion, start_ms);
     comms_init();
+    comms_commands_init(&emotion);
 
     for (;;) {
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        emotion_set_battery_percent(&emotion, eldra_sensors_get_battery_percent());
         emotion_on_tick(&emotion, now_ms);
         comms_process_all_pending(&emotion, now_ms);
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -70,6 +96,24 @@ void app_main(void) {
         goto fail_safe;
     }
     ESP_LOGI(TAG, "Sensors init complete");
+
+    // Initialize command router (shared by UART console and future HTTP) with no emotion context yet.
+    comms_commands_init(NULL);
+    // Start interactive console for commands/log retrieval.
+    comms_console_start();
+
+#if defined(ELDRA_DEBUG_SET_RTC)
+    // One-shot RTC set for backup-battery validation.
+    if (eldra_sensors_rtc_set(&k_debug_rtc_time) != ESP_OK) {
+        ESP_LOGW(TAG, "RTC set failed");
+    } else {
+        datetime_t now = {0};
+        eldra_sensors_rtc_get(&now);
+        char ts[64] = {0};
+        datetime_to_str(ts, now);
+        ESP_LOGI(TAG, "RTC now %s (debug set enabled)", ts);
+    }
+#endif
 
     if (eldra_display_round_init() != ESP_OK) {
         ESP_LOGE(TAG, "Display init failed; holding");

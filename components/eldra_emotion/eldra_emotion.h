@@ -34,6 +34,7 @@ typedef struct {
     uint8_t social;
     uint8_t fear;
     uint8_t eldritch_charge;
+    uint8_t battery_percent;
 
     emotion_state_t current_state;
     emotion_state_t previous_state;
@@ -71,6 +72,13 @@ void emotion_init(emotion_context_t *ctx, uint32_t now_ms);
  * @param now_ms Current monotonic time in milliseconds.
  */
 void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms);
+
+/**
+ * @brief Update the tracked battery percentage (0-100). Callers compute the percentage from hardware readings.
+ * @param ctx Emotion context.
+ * @param percent Battery level percent (clamped to 0-100).
+ */
+void emotion_set_battery_percent(emotion_context_t *ctx, uint8_t percent);
 
 /**
  * @brief Event: feeding Eldra.

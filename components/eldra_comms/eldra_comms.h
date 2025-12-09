@@ -11,6 +11,8 @@
  * @brief Command backbone that normalizes BLE/IR/RFID/Wi-Fi inputs into a shared queue.
  */
 
+typedef bool (*console_cmd_handler_t)(const char *args);
+
 /**
  * @brief Command categories that can be enqueued for the Emotion Engine.
  */
@@ -78,3 +80,29 @@ void comms_on_rfid_tag(uint32_t tag_id);
  * @brief Stub: Wi-Fi server handler for pushed commands or polled queue.
  */
 void comms_on_server_command(const pet_command_t *cmd);
+
+/**
+ * @brief Start a UART console task on UART0 for interactive commands and log retrieval.
+ */
+void comms_console_start(void);
+
+/**
+ * @brief Initialize command router with optional emotion context for STATE reporting.
+ *        This router is transport-agnostic and can be reused by UART console and future HTTP handlers.
+ */
+void comms_commands_init(emotion_context_t *ctx);
+
+/**
+ * @brief Register an additional console/HTTP command handler.
+ * @param name Command name (uppercase preferred).
+ * @param handler Function to invoke; returns true if handled.
+ * @param help Short description for future help output (optional).
+ * @return true on success, false if the table is full or inputs invalid.
+ */
+bool comms_commands_register(const char *name, console_cmd_handler_t handler, const char *help);
+
+/**
+ * @brief Process a single command line (shared by UART console and future HTTP endpoints).
+ * @param line Null-terminated line.
+ */
+void comms_commands_process_line(const char *line);
