@@ -11,6 +11,7 @@
 #include <math.h>
 #include "esp_log.h"
 #include "esp_random.h"
+#include "eldra_logging.h"
 
 static const char *TAG = "eldra_eyes";
 
@@ -450,7 +451,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
-        ESP_LOGI(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
+        EL_LOGD(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_LOOK) {
         ctx->look.active = true;
         ctx->look.elapsed_ms = 0;
@@ -461,7 +462,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
             ? look_sequence_total_ms(k_look_right_sequence, k_look_right_sequence_len)
             : look_sequence_total_ms(k_look_left_sequence, k_look_left_sequence_len);
         ctx->idle.clip_duration_ms = ctx->look.duration_ms;
-        ESP_LOGI(TAG, "Idle start: %s dir=%s (duration=%u)", idle_clip_name(chosen),
+        EL_LOGD(TAG, "Idle start: %s dir=%s (duration=%u)", idle_clip_name(chosen),
                  (ctx->look.direction >= 0) ? "RIGHT" : "LEFT", ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_DOUBLE_BLINK) {
         ctx->blink.active = true;
@@ -474,7 +475,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
-        ESP_LOGI(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
+        EL_LOGD(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_EXTENDED_BLINK) {
         ctx->blink.active = true;
         ctx->blink.elapsed_ms = 0;
@@ -486,7 +487,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
-        ESP_LOGI(TAG, "Idle start: %s (duration=%u hold=%u)", idle_clip_name(chosen),
+        EL_LOGD(TAG, "Idle start: %s (duration=%u hold=%u)", idle_clip_name(chosen),
                  ctx->idle.clip_duration_ms, ctx->blink.hold_ms);
     } else {
         ctx->idle.clip_duration_ms = 0;
@@ -604,7 +605,7 @@ void eldra_eyes_trigger_dizzy(eldra_eyes_context_t *ctx, uint32_t duration_ms)
     ctx->reactive_dizzy.active = true;
     ctx->reactive_dizzy.elapsed_ms = 0;
     ctx->reactive_dizzy.duration_ms = (duration_ms == 0) ? 2200 : duration_ms;
-    ESP_LOGI(TAG, "Reactive: DIZZY start (duration=%u)", ctx->reactive_dizzy.duration_ms);
+    EL_LOGI(TAG, "Reactive: DIZZY start (duration=%u)", ctx->reactive_dizzy.duration_ms);
 }
 
 void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
@@ -647,7 +648,7 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
                 eldra_eyes_trigger_dizzy(ctx, 0);
                 ctx->imu.above_thresh_ms = 0;
                 ctx->imu.cooldown_ms = k_dizzy_cooldown_ms;
-                ESP_LOGI(TAG, "IMU: Dizzy trigger (gyro=%.1f dps)", (double)gyro_mag);
+                EL_LOGD(TAG, "IMU: Dizzy trigger (gyro=%.1f dps)", (double)gyro_mag);
             }
         } else {
             ctx->imu.above_thresh_ms = 0;
@@ -662,7 +663,7 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
     } else {
         float roll_deg = atan2f(ay_g, az_g) * k_rad_to_deg;
         float pitch_deg = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * k_rad_to_deg;
-        ESP_LOGI(TAG, "IMU: gyro=%.1f dps (ema=%.1f) accel=%.2f g (ema=%.2f) roll=%.1f pitch=%.1f thresh=%0.1fms/%0.1fdps cool=%ums",
+        EL_LOGD(TAG, "IMU: gyro=%.1f dps (ema=%.1f) accel=%.2f g (ema=%.2f) roll=%.1f pitch=%.1f thresh=%0.1fms/%0.1fdps cool=%ums",
                  (double)gyro_mag,
                  (double)ctx->imu.gyro_ema_dps,
                  (double)accel_mag,
@@ -694,7 +695,7 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
             ctx->reactive_dizzy.elapsed_ms = 0;
             ctx->reactive_dizzy.duration_ms = 0;
             ctx->idle.idle_gap_ms = 600 + (esp_random() % 400); // settle before next idle
-            ESP_LOGI(TAG, "Reactive: DIZZY end");
+            EL_LOGI(TAG, "Reactive: DIZZY end");
         }
     }
 
@@ -712,7 +713,7 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
         ctx->idle.clip_elapsed_ms += dt_ms;
         if (ctx->idle.clip_elapsed_ms >= ctx->idle.clip_duration_ms) {
             ctx->idle.last_clip = ctx->idle.active_clip;
-            ESP_LOGI(TAG, "Idle end: %s", idle_clip_name(ctx->idle.last_clip));
+            EL_LOGD(TAG, "Idle end: %s", idle_clip_name(ctx->idle.last_clip));
             ctx->idle.active_clip = IDLE_CLIP_NONE;
             ctx->idle.clip_elapsed_ms = 0;
             ctx->idle.clip_duration_ms = 0;
@@ -899,3 +900,4 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
                  right_x0, right_y0, scale_x, scale_y_right, eye_frame);
     }
 }
+

@@ -20,6 +20,8 @@ typedef struct {
 - UART0 console task feeds lines into a transport-agnostic command router that HTTP can reuse later.
 - Default commands:
   - `LOGS [tag] [level] [limit]` – dump recent in-RAM logs (ring buffer of last 100 entries).
+  - `LOGSD ON|OFF|ROTATE` – enable/disable SD logging or force a rotation.
+  - `LOGLEVEL DEBUG|INFO|WARN|ERROR` – set console log level (ring/SD unaffected).
   - `SETTIME <epoch_ms|dd/mm/yyyy-HH:MM:SS>` – set RTC from epoch or human format.
   - `SETDATE dd/mm/yyyy` – set RTC date only.
   - `SETCLOCK HH:MM:SS` – set RTC time only.
@@ -43,8 +45,9 @@ typedef struct {
 - **Wi-Fi:** Pet pushes logs/state to a home server and polls for queued commands to enqueue locally.
 
 ## SD and Remote Logging
-All modules call `log_event(level, tag, msg)` rather than raw logging macros. It keeps an in-RAM ring (last 100 entries) for quick console/HTTP retrieval via `LOGS`. Later it will:
-- Write to SD card with timestamps.
+All modules call `log_event(level, tag, msg)` (or `EL_LOG{D/I/W/E}` macros) rather than raw logging macros. It keeps an in-RAM ring (last 100 entries) for quick console/HTTP retrieval via `LOGS` and writes append-only lines to `/sdcard/eldra_YYYYMMDD.log` with fixed EST timestamps (one entry per line) when the SD is mounted, with daily rotation. SD logging can be toggled/rotated via `LOGSD`. Later it will:
 - Optionally mirror to the home server alongside telemetry snapshots.
+
+Console default level is set to `ERROR` to avoid chatter; use `LOGLEVEL` to temporarily raise it or use `LOGS` to fetch recent entries without changing the level.
 
 Centralizing logging allows the Emotion Engine, sensors, comms, and actuators to gain persistent logs without code changes when storage or streaming is added.

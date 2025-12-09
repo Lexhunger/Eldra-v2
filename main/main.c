@@ -58,8 +58,10 @@ static void run_emotion_backbone_demo(void) {
     uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
 
     log_init();
+    // Temporarily raise console verbosity during boot for diagnostics, then fall back to ERROR.
+    log_set_console_level_temporary(LOG_LEVEL_INFO, 5000, LOG_LEVEL_ERROR);
     if (eldra_sensors_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor init failed; cannot run emotion demo");
+        EL_LOGE(TAG, "Sensor init failed; cannot run emotion demo");
         return;
     }
     emotion_init(&emotion, start_ms);
@@ -92,10 +94,10 @@ void app_main(void) {
     log_init();
 
     if (eldra_sensors_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor init failed; holding");
+        EL_LOGE(TAG, "Sensor init failed; holding");
         goto fail_safe;
     }
-    ESP_LOGI(TAG, "Sensors init complete");
+    EL_LOGI(TAG, "Sensors init complete");
 
     // Initialize command router (shared by UART console and future HTTP) with no emotion context yet.
     comms_commands_init(NULL);
@@ -105,21 +107,21 @@ void app_main(void) {
 #if defined(ELDRA_DEBUG_SET_RTC)
     // One-shot RTC set for backup-battery validation.
     if (eldra_sensors_rtc_set(&k_debug_rtc_time) != ESP_OK) {
-        ESP_LOGW(TAG, "RTC set failed");
+        EL_LOGW(TAG, "RTC set failed");
     } else {
         datetime_t now = {0};
         eldra_sensors_rtc_get(&now);
         char ts[64] = {0};
         datetime_to_str(ts, now);
-        ESP_LOGI(TAG, "RTC now %s (debug set enabled)", ts);
+        EL_LOGI(TAG, "RTC now %s (debug set enabled)", ts);
     }
 #endif
 
     if (eldra_display_round_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Display init failed; holding");
+        EL_LOGE(TAG, "Display init failed; holding");
         goto fail_safe;
     }
-    ESP_LOGI(TAG, "Display init complete");
+    EL_LOGI(TAG, "Display init complete");
 
     // Ensure the backlight is on (vendor default may be 0).
     eldra_display_round_set_backlight(90);
@@ -129,20 +131,20 @@ void app_main(void) {
 
     eldra_eyes_context_t *eyes_ctx = eldra_eyes_create();
     if (!eyes_ctx) {
-        ESP_LOGE(TAG, "Failed to create eyes context; holding");
+        EL_LOGE(TAG, "Failed to create eyes context; holding");
         goto fail_safe;
     }
     g_eyes_ctx = eyes_ctx;
-    ESP_LOGI(TAG, "Eyes context created");
+    EL_LOGI(TAG, "Eyes context created");
     eldra_sensors_set_imu_callback(imu_callback);
-    ESP_LOGI(TAG, "IMU callback registered");
+    EL_LOGI(TAG, "IMU callback registered");
 
     size_t buf_size_bytes = (size_t)fb_width * (size_t)fb_height * sizeof(uint16_t);
     uint16_t *framebuffer = (uint16_t *)heap_caps_malloc(buf_size_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!framebuffer) {
         framebuffer = (uint16_t *)heap_caps_malloc(buf_size_bytes, MALLOC_CAP_8BIT);
         if (!framebuffer) {
-            ESP_LOGE(TAG, "Framebuffer alloc failed; holding");
+            EL_LOGE(TAG, "Framebuffer alloc failed; holding");
             goto fail_safe;
         }
     }
@@ -152,7 +154,7 @@ void app_main(void) {
         framebuffer[i] = 0xFFFF; // white
     }
     esp_err_t test_blit = eldra_display_round_blit(framebuffer, fb_width, fb_height);
-    ESP_LOGI(TAG, "Test pattern blit result=%d", test_blit);
+    EL_LOGI(TAG, "Test pattern blit result=%d", test_blit);
     vTaskDelay(pdMS_TO_TICKS(200));
 
     // Simple real-time loop (~60 FPS): update eyes, render, and push to panel.
@@ -170,7 +172,7 @@ void app_main(void) {
         eldra_eyes_render(eyes_ctx, framebuffer, (uint16_t)fb_width, (uint16_t)fb_height);
         esp_err_t blit_ret = eldra_display_round_blit(framebuffer, fb_width, fb_height);
         if (blit_ret != ESP_OK) {
-            ESP_LOGE(TAG, "Blit failed: %d", blit_ret);
+            EL_LOGE(TAG, "Blit failed: %d", blit_ret);
         }
 
         vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS pacing
@@ -182,3 +184,4 @@ fail_safe:
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+

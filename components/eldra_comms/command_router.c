@@ -251,6 +251,42 @@ static bool cmd_forcestate(const char *args) {
     return true;
 }
 
+static bool cmd_logsd(const char *args) {
+    if (!args || !*args) {
+        log_event(LOG_LEVEL_INFO, TAG, "LOGSD requires ON/OFF/ROTATE");
+        return true;
+    }
+    if (strcasecmp(args, "ON") == 0) {
+        log_sd_set_enabled(true);
+        log_event(LOG_LEVEL_INFO, TAG, "SD logging enabled");
+    } else if (strcasecmp(args, "OFF") == 0) {
+        log_sd_set_enabled(false);
+        log_event(LOG_LEVEL_INFO, TAG, "SD logging disabled");
+    } else if (strcasecmp(args, "ROTATE") == 0) {
+        log_sd_force_rotate();
+        log_event(LOG_LEVEL_INFO, TAG, "SD log rotation requested");
+    } else {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGSD unknown arg (use ON/OFF/ROTATE)");
+    }
+    return true;
+}
+
+static bool cmd_loglevel(const char *args) {
+    if (!args || !*args) {
+        log_event(LOG_LEVEL_INFO, TAG, "LOGLEVEL requires DEBUG/INFO/WARN/ERROR");
+        return true;
+    }
+    bool matched = false;
+    log_level_t lvl = parse_level(args, &matched);
+    if (!matched) {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGLEVEL unknown arg");
+        return true;
+    }
+    log_set_console_level(lvl);
+    log_event(LOG_LEVEL_INFO, TAG, "Console log level set to %s", args);
+    return true;
+}
+
 bool comms_commands_register(const char *name, console_cmd_handler_t handler, const char *help) {
     if (!name || !handler || s_command_count >= MAX_COMMANDS) {
         return false;
@@ -275,6 +311,8 @@ void comms_commands_init(emotion_context_t *ctx) {
     comms_commands_register("PET", cmd_pet, "PET");
     comms_commands_register("PLAY", cmd_play, "PLAY");
     comms_commands_register("FORCESTATE", cmd_forcestate, "FORCESTATE <state_id>");
+    comms_commands_register("LOGSD", cmd_logsd, "LOGSD ON|OFF|ROTATE");
+    comms_commands_register("LOGLEVEL", cmd_loglevel, "LOGLEVEL DEBUG|INFO|WARN|ERROR");
 }
 
 void comms_commands_process_line(const char *line) {

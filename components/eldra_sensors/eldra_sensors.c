@@ -1,6 +1,5 @@
 #include "eldra_sensors.h"
-#include "esp_log.h"
-#include "eldra_sensors.h"
+#include "eldra_logging.h"
 
 /**
  * @file eldra_sensors.c
@@ -51,9 +50,9 @@ static uint8_t battery_voltage_to_percent(float volts) {
 }
 
 static void sd_init_task(void *param) {
-    ESP_LOGI("eldra_sensors", "Init: SD task start");
+    EL_LOGI("eldra_sensors", "Init: SD task start");
     SD_Init(); // vendor driver returns void; rely on its own logging if present
-    ESP_LOGI("eldra_sensors", "SD init attempted (no status available)");
+    EL_LOGI("eldra_sensors", "SD init attempted (no status available)");
     vTaskDelete(NULL);
 }
 
@@ -94,21 +93,21 @@ static void driver_loop(void *parameter) {
 
 esp_err_t eldra_sensors_init(void) {
     // Mirror the vendor init order so higher-level code can stay hardware-agnostic.
-    ESP_LOGI("eldra_sensors", "Init: buttons");
+    EL_LOGI("eldra_sensors", "Init: buttons");
     button_Init();
     // Wireless (Wi-Fi/BLE) disabled for now to avoid unsupported BLE scan crash; re-enable when needed.
     // Wireless_Init();
-    ESP_LOGI("eldra_sensors", "Init: flash search");
+    EL_LOGI("eldra_sensors", "Init: flash search");
     Flash_Searching();
-    ESP_LOGI("eldra_sensors", "Init: battery");
+    EL_LOGI("eldra_sensors", "Init: battery");
     BAT_Init();
-    ESP_LOGI("eldra_sensors", "Init: I2C");
+    EL_LOGI("eldra_sensors", "Init: I2C");
     I2C_Init();
-    ESP_LOGI("eldra_sensors", "Init: RTC");
+    EL_LOGI("eldra_sensors", "Init: RTC");
     PCF85063_Init();
-    ESP_LOGI("eldra_sensors", "Init: IMU");
+    EL_LOGI("eldra_sensors", "Init: IMU");
     QMI8658_Init();
-    ESP_LOGI("eldra_sensors", "Init: IO expander");
+    EL_LOGI("eldra_sensors", "Init: IO expander");
     EXIO_Init();
 
     xTaskCreatePinnedToCore(
@@ -120,9 +119,9 @@ esp_err_t eldra_sensors_init(void) {
         NULL,
         0);
 
-    ESP_LOGI("eldra_sensors", "Init: SD (deferred task)");
+    EL_LOGI("eldra_sensors", "Init: SD (deferred task)");
     xTaskCreatePinnedToCore(sd_init_task, "sd_init", 3072, NULL, 3, NULL, 0);
-    ESP_LOGI("eldra_sensors", "Sensors init done");
+    EL_LOGI("eldra_sensors", "Sensors init done");
     return ESP_OK;
 }
 
@@ -152,3 +151,4 @@ esp_err_t eldra_sensors_rtc_get(datetime_t *out_time) {
     PCF85063_Read_Time(out_time);
     return ESP_OK;
 }
+
