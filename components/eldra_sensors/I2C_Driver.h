@@ -12,7 +12,7 @@
 #define I2C_Touch_SDA_IO            15         /*!< GPIO number used for I2C master data  */
 #define I2C_MASTER_NUM              0         /*!< I2C master port */
 #define I2C_MASTER_FREQ_HZ          400000    /*!< I2C master clock frequency */
-#define I2C_MASTER_TIMEOUT_MS       1000
+#define I2C_MASTER_TIMEOUT_MS       200
 
 
 void I2C_Init(void);

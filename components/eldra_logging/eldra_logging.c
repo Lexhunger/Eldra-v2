@@ -7,6 +7,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <errno.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -44,6 +45,11 @@ static uint32_t s_pending_lines = 0;
 static uint32_t s_console_level_decay_ms = 0;
 static log_level_t s_console_level_target = LOG_LEVEL_INFO;
 static TaskHandle_t s_log_task_handle = NULL;
+static bool s_logged_open_success = false;
+static bool s_logged_open_fail = false;
+static const char *LOG_INTERNAL_TAG = "eldra_logging";
+static char s_prompt[16] = {0};
+static bool s_prompt_enabled = false;
 
 static void log_background_task(void *param);
 
@@ -97,6 +103,12 @@ static void rotate_log_if_needed(uint32_t ms) {
     s_log_file = fopen(path, "a");
     if (s_log_file) {
         setvbuf(s_log_file, NULL, _IOFBF, 1024);
+        ESP_LOGI(LOG_INTERNAL_TAG, "SD log file opened: %s", path);
+        s_logged_open_success = true;
+        s_logged_open_fail = false;
+    } else if (!s_logged_open_fail) {
+        ESP_LOGW(LOG_INTERNAL_TAG, "Failed to open log file %s (errno=%d)", path, errno);
+        s_logged_open_fail = true;
     }
     s_last_log_date = date_val;
     s_pending_lines = 0;
@@ -172,6 +184,10 @@ void log_init(void) {
     s_pending_lines = 0;
     s_console_level_decay_ms = 0;
     s_console_level_target = LOG_LEVEL_ERROR;
+    s_logged_open_success = false;
+    s_logged_open_fail = false;
+    s_prompt_enabled = false;
+    s_prompt[0] = '\0';
     for (size_t i = 0; i < sizeof(s_sample_rules) / sizeof(s_sample_rules[0]); ++i) {
         s_sample_rules[i].counter = 0;
     }
@@ -188,7 +204,25 @@ void log_event(log_level_t level, const char *tag, const char *fmt, ...) {
     va_copy(args_copy, args);
     if (level >= s_console_min_level) {
         esp_log_level_t esp_level = to_esp_level(level);
-        esp_log_writev(esp_level, log_tag, fmt, args);
+        char console_buf[LOG_MSG_MAX + 2];
+        int n = vsnprintf(console_buf, sizeof(console_buf), fmt, args);
+        if (n < 0 || n >= (int)sizeof(console_buf)) {
+            // Truncated; ensure null-termination
+            console_buf[sizeof(console_buf) - 1] = '\0';
+        }
+        // Ensure each console line ends with a newline to avoid concatenation.
+        size_t len = strlen(console_buf);
+        if (len + 1 < sizeof(console_buf)) {
+            console_buf[len] = '\n';
+            console_buf[len + 1] = '\0';
+        }
+        esp_log_write(esp_level, log_tag, "%s", console_buf);
+        if (s_prompt_enabled && s_prompt[0]) {
+            // Re-print prompt so REPL doesn't require an extra Enter after async logs.
+            // Use stdout directly to avoid extra log prefixes.
+            fputs(s_prompt, stdout);
+            fflush(stdout);
+        }
     }
     va_end(args);
 
@@ -238,7 +272,7 @@ void log_dump_recent(const char *tag_filter, log_level_t min_level, size_t limit
         }
         uint32_t ms = (uint32_t)(e->ts_us / 1000ULL);
         esp_log_level_t esp_level = to_esp_level(e->level);
-        esp_log_write(esp_level, e->tag, "%10u ms | %s", (unsigned)ms, e->msg);
+        esp_log_write(esp_level, e->tag, "%10u ms | %s\n", (unsigned)ms, e->msg);
         to_print--;
     }
 }
@@ -262,6 +296,17 @@ void log_sd_force_rotate(void) {
     s_log_file_attempted = false;
 }
 
+void log_sd_notify_mounted(void) {
+    // Reset retry bookkeeping and try immediately.
+    s_log_file_attempted = false;
+    s_logged_open_success = false;
+    s_logged_open_fail = false;
+    s_last_retry_ms = 0;
+    s_last_log_date = -1;
+    uint32_t ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    sd_try_open(ms);
+}
+
 void log_set_console_level(log_level_t level) {
     s_console_min_level = level;
 }
@@ -276,6 +321,16 @@ void log_task_start(void) {
     // Task is created in log_init if missing; this function can be used to ensure start.
     if (s_log_task_handle == NULL) {
         log_init();
+    }
+}
+
+void log_set_prompt(const char *prompt) {
+    if (prompt && prompt[0]) {
+        strlcpy(s_prompt, prompt, sizeof(s_prompt));
+        s_prompt_enabled = true;
+    } else {
+        s_prompt_enabled = false;
+        s_prompt[0] = '\0';
     }
 }
 

@@ -130,4 +130,12 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
                        uint16_t fb_width,
                        uint16_t fb_height);
 
+/**
+ * @brief Override the render center offsets (pixels).
+ *
+ * Positive x moves right, positive y moves down. Useful for runtime tuning
+ * without rebuilding.
+ */
+void eldra_eyes_set_center_offset(int x_offset, int y_offset);
+
 #endif /* ELDRA_EYES_H */

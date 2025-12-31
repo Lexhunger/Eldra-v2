@@ -63,6 +63,11 @@ void log_sd_set_enabled(bool enabled);
 void log_sd_force_rotate(void);
 
 /**
+ * @brief Hint to the logger that SD is mounted so it can retry opening files immediately.
+ */
+void log_sd_notify_mounted(void);
+
+/**
  * @brief Set the minimum level that is emitted to the console (UART). Ring/SD buffering is unaffected.
  */
 void log_set_console_level(log_level_t level);
@@ -76,3 +81,8 @@ void log_set_console_level_temporary(log_level_t level, uint32_t duration_ms, lo
  * @brief Initialize the logging task (background flush and SD/file handling).
  */
 void log_task_start(void);
+
+/**
+ * @brief Optional prompt string to reprint after console logs (helps REPL prompt recover after async logs).
+ */
+void log_set_prompt(const char *prompt);

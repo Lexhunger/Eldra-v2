@@ -1,14 +1,48 @@
+// ST7701S driver: sets up reset/CS lines (via EXIO), sends init sequence,
+// configures RGB panel, and provides a simple "Hello" bitmap renderer (legacy).
 #include "ST7701S.h"
 
-#define SPI_WriteComm(cmd) ST7701S_WriteCommand(St7701S_handle, cmd)
-#define SPI_WriteData(data) ST7701S_WriteData(St7701S_handle, data)
-#define Delay(ms) vTaskDelay(ms / portTICK_PERIOD_MS)
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include "esp_heap_caps.h"
+
+#if LCD_RESET_VIA_EXIO || LCD_CS_VIA_EXIO
+#include "TCA9554PWR.h"
+#endif
+
+#define Delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
 
 static const char *LCD_TAG = "LCD";
+static ST7701S_handle st7701s_handle = NULL;
+esp_lcd_panel_handle_t panel_handle = NULL;
 
-void ioexpander_init(){};
-void ioexpander_write_cmd(){};
-void ioexpander_write_data(){};
+typedef struct {
+    char c;
+    uint8_t rows[7];
+} glyph_t;
+
+static const glyph_t simple_font[] = {
+    {' ', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {'D', {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E}},
+    {'E', {0x1F, 0x10, 0x1E, 0x10, 0x1E, 0x10, 0x1F}},
+    {'H', {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+    {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
+    {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
+    {'W', {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11}},
+};
+
+static const glyph_t *find_glyph(char c)
+{
+    size_t count = sizeof(simple_font) / sizeof(simple_font[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (simple_font[i].c == c) {
+            return &simple_font[i];
+        }
+    }
+    return &simple_font[0]; // space as fallback
+}
 
 /**
  * @brief Example Create an ST7701S object
@@ -21,36 +55,38 @@ void ioexpander_write_data(){};
 */
 ST7701S_handle ST7701S_newObject(int SDA, int SCL, int CS, char channel_select, char method_select)
 {
-    // if you use `malloc()`, please set 0 in the area to be assigned.
-    ST7701S_handle st7701s_handle = heap_caps_calloc(1, sizeof(ST7701S), MALLOC_CAP_DEFAULT);
-    st7701s_handle->method_select = method_select;
-    
-    if(method_select){
-        st7701s_handle->spi_io_config_t.miso_io_num = -1;
-        st7701s_handle->spi_io_config_t.mosi_io_num = SDA;
-        st7701s_handle->spi_io_config_t.sclk_io_num = SCL;
-        st7701s_handle->spi_io_config_t.quadwp_io_num = -1;
-        st7701s_handle->spi_io_config_t.quadhd_io_num = -1;
-
-        st7701s_handle->spi_io_config_t.max_transfer_sz = SOC_SPI_MAXIMUM_BUFFER_SIZE;
-
-        ESP_ERROR_CHECK(spi_bus_initialize(channel_select, &(st7701s_handle->spi_io_config_t),SPI_DMA_CH_AUTO));
-
-        st7701s_handle->st7701s_protocol_config_t.command_bits = 1;
-        st7701s_handle->st7701s_protocol_config_t.address_bits = 8;
-        st7701s_handle->st7701s_protocol_config_t.clock_speed_hz = 4000000;
-        st7701s_handle->st7701s_protocol_config_t.mode = 0;
-        st7701s_handle->st7701s_protocol_config_t.spics_io_num = CS;
-        st7701s_handle->st7701s_protocol_config_t.queue_size = 1;
-
-        ESP_ERROR_CHECK(spi_bus_add_device(channel_select, &(st7701s_handle->st7701s_protocol_config_t),
-                                        &(st7701s_handle->spi_device)));
-        
-        return st7701s_handle;
-    }else{
-        ioexpander_init();
+    ST7701S_handle new_handle = heap_caps_calloc(1, sizeof(ST7701S), MALLOC_CAP_DEFAULT);
+    if (!new_handle) {
+        return NULL;
     }
-    return NULL;
+    new_handle->method_select = method_select;
+    
+    if (method_select) {
+        new_handle->spi_io_config_t.miso_io_num = -1;
+        new_handle->spi_io_config_t.mosi_io_num = SDA;
+        new_handle->spi_io_config_t.sclk_io_num = SCL;
+        new_handle->spi_io_config_t.quadwp_io_num = -1;
+        new_handle->spi_io_config_t.quadhd_io_num = -1;
+
+        new_handle->spi_io_config_t.max_transfer_sz = SOC_SPI_MAXIMUM_BUFFER_SIZE;
+
+        ESP_ERROR_CHECK(spi_bus_initialize(channel_select, &(new_handle->spi_io_config_t), SPI_DMA_CH_AUTO));
+
+        new_handle->st7701s_protocol_config_t.command_bits = 1;
+        new_handle->st7701s_protocol_config_t.address_bits = 8;
+        new_handle->st7701s_protocol_config_t.clock_speed_hz = 4000000;
+        new_handle->st7701s_protocol_config_t.mode = 0;
+        new_handle->st7701s_protocol_config_t.spics_io_num = CS;
+        new_handle->st7701s_protocol_config_t.queue_size = 1;
+
+        ESP_ERROR_CHECK(spi_bus_add_device(channel_select, &(new_handle->st7701s_protocol_config_t),
+                                           &(new_handle->spi_device)));
+        
+        return new_handle;
+    } else {
+        // IO expander write path is not used in this trimmed-down example.
+        return NULL;
+    }
 }
 
 /**
@@ -61,6 +97,10 @@ ST7701S_handle ST7701S_newObject(int SDA, int SCL, int CS, char channel_select, 
 */
 void ST7701S_screen_init(ST7701S_handle St7701S_handle, unsigned char type)
 {
+    (void)St7701S_handle;
+    // Local short-hands to keep the init table readable.
+    #define SPI_WriteComm(cmd) ST7701S_WriteCommand(St7701S_handle, cmd)
+    #define SPI_WriteData(data) ST7701S_WriteData(St7701S_handle, data)
     if (type == 1){
     // 2.8inch
     SPI_WriteComm(0xFF);     
@@ -322,6 +362,8 @@ void ST7701S_screen_init(ST7701S_handle St7701S_handle, unsigned char type)
 
     SPI_WriteComm(0x29);
     }
+    #undef SPI_WriteComm
+    #undef SPI_WriteData
 }
 
 /**
@@ -330,7 +372,9 @@ void ST7701S_screen_init(ST7701S_handle St7701S_handle, unsigned char type)
 */
 void ST7701S_delObject(ST7701S_handle St7701S_handle)
 {
-    assert(St7701S_handle != NULL);
+    if (St7701S_handle == NULL) {
+        return;
+    }
     free(St7701S_handle);
 }
 
@@ -350,7 +394,7 @@ void ST7701S_WriteCommand(ST7701S_handle St7701S_handle, uint8_t cmd)
         };
         spi_device_transmit(St7701S_handle->spi_device, &spi_tran);
     }else{
-        ioexpander_write_cmd();
+        // IO expander path not used in this simplified example
     }
 }
 
@@ -370,71 +414,128 @@ void ST7701S_WriteData(ST7701S_handle St7701S_handle, uint8_t data)
         };
         spi_device_transmit(St7701S_handle->spi_device, &spi_tran);
     }else{
-        ioexpander_write_data();
+        // IO expander path not used in this simplified example
     }
 }
 
 
-esp_err_t ST7701S_reset(void)
+// Reset line handling (EXIO or direct GPIO depending on board wiring)
+static esp_err_t ST7701S_reset(void)
 {
-    Set_EXIO(TCA9554_EXIO1,false);
+#if LCD_RESET_VIA_EXIO
+    Set_EXIO(TCA9554_EXIO1, false);
+#else
+    if (LCD_RESET_GPIO < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    gpio_set_level(LCD_RESET_GPIO, 0);
+#endif
     vTaskDelay(pdMS_TO_TICKS(10));
-    Set_EXIO(TCA9554_EXIO1,true);
+#if LCD_RESET_VIA_EXIO
+    Set_EXIO(TCA9554_EXIO1, true);
+#else
+    gpio_set_level(LCD_RESET_GPIO, 1);
+#endif
     vTaskDelay(pdMS_TO_TICKS(10));
     return ESP_OK;
 }
 
-esp_err_t ST7701S_CS_EN(void)
+// Manual chip-select handling (EXIO or direct GPIO)
+static esp_err_t ST7701S_CS_EN(void)
 {
+#if LCD_CS_VIA_EXIO
     Set_EXIO(TCA9554_EXIO3,false);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    return ESP_OK;
-}
-esp_err_t ST7701S_CS_Dis(void)
-{
-    Set_EXIO(TCA9554_EXIO3,true);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    return ESP_OK;
-}
-
-#if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
-SemaphoreHandle_t sem_vsync_end;
-SemaphoreHandle_t sem_gui_ready;
+#else
+    if (LCD_CS_GPIO < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    gpio_set_level(LCD_CS_GPIO, 0);
 #endif
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static bool example_on_vsync_event(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *event_data, void *user_data)
+    vTaskDelay(pdMS_TO_TICKS(10));
+    return ESP_OK;
+}
+static esp_err_t ST7701S_CS_Dis(void)
 {
-    BaseType_t high_task_awoken = pdFALSE;
-#if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
-    if (xSemaphoreTakeFromISR(sem_gui_ready, &high_task_awoken) == pdTRUE) {
-        xSemaphoreGiveFromISR(sem_vsync_end, &high_task_awoken);
+#if LCD_CS_VIA_EXIO
+    Set_EXIO(TCA9554_EXIO3,true);
+#else
+    if (LCD_CS_GPIO < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    gpio_set_level(LCD_CS_GPIO, 1);
+#endif
+    vTaskDelay(pdMS_TO_TICKS(10));
+    return ESP_OK;
+}
+
+static void draw_glyph(uint16_t *buffer, int buf_w, int x, int y, const glyph_t *glyph, int scale, uint16_t fg, uint16_t bg)
+{
+    const int glyph_w = 5;
+    const int glyph_h = 7;
+    for (int row = 0; row < glyph_h; row++) {
+        for (int col = 0; col < glyph_w; col++) {
+            bool on = (glyph->rows[row] >> (glyph_w - 1 - col)) & 0x01;
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + col * scale + sx;
+                    int py = y + row * scale + sy;
+                    buffer[py * buf_w + px] = on ? fg : bg;
+                }
+            }
+        }
+    }
+}
+
+// Bring up control lines: initialize EXIO if needed and set GPIO directions.
+static esp_err_t lcd_control_lines_init(void)
+{
+#if LCD_RESET_VIA_EXIO || LCD_CS_VIA_EXIO
+    ESP_LOGI(LCD_TAG, "Init EXIO for reset/CS");
+    esp_err_t ret = EXIO_Init();
+    if (ret != ESP_OK) {
+        return ret;
     }
 #endif
-    return high_task_awoken == pdTRUE;
+
+#if !LCD_RESET_VIA_EXIO
+    if (LCD_RESET_GPIO < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    gpio_reset_pin(LCD_RESET_GPIO);
+    gpio_set_direction(LCD_RESET_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LCD_RESET_GPIO, 1);
+#endif
+#if !LCD_CS_VIA_EXIO
+    if (LCD_CS_GPIO >= 0) {
+        gpio_reset_pin(LCD_CS_GPIO);
+        gpio_set_direction(LCD_CS_GPIO, GPIO_MODE_OUTPUT);
+        gpio_set_level(LCD_CS_GPIO, 1);
+    }
+#endif
+    return ESP_OK;
 }
 
-esp_lcd_panel_handle_t panel_handle = NULL;
-void LCD_Init(void)
+esp_err_t LCD_Init(void)
 {
-    /********************* LCD *********************/
+    if (panel_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t ret = lcd_control_lines_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
     ST7701S_reset();
     ST7701S_CS_EN();
     vTaskDelay(pdMS_TO_TICKS(100));
-    ST7701S_handle st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
+    st7701s_handle = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
+    if (!st7701s_handle) {
+        return ESP_ERR_NO_MEM;
+    }
     
-    ST7701S_screen_init(st7701s, 1);
-    #if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
-        ESP_LOGI(LCD_TAG, "Create semaphores");
-        sem_vsync_end = xSemaphoreCreateBinary();
-        assert(sem_vsync_end);
-        sem_gui_ready = xSemaphoreCreateBinary();
-        assert(sem_gui_ready);
-    #endif
+    ST7701S_screen_init(st7701s_handle, 1);
 
-    /********************* RGB LCD panel driver *********************/
     ESP_LOGI(LCD_TAG, "Install RGB LCD panel driver");
     esp_lcd_rgb_panel_config_t panel_config = {
         .data_width = 16, // RGB565 in parallel mode, thus 16bit in width
@@ -481,19 +582,86 @@ void LCD_Init(void)
         },
         .flags.fb_in_psram = true, // allocate frame buffer in PSRAM
     };
-    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panel_config, &panel_handle));
-
-    ESP_LOGI(LCD_TAG, "Register event callbacks");
-    esp_lcd_rgb_panel_event_callbacks_t cbs = {
-        .on_vsync = example_on_vsync_event,
-    };
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panel_handle, &cbs, NULL));
+    ret = esp_lcd_new_rgb_panel(&panel_config, &panel_handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     ESP_LOGI(LCD_TAG, "Initialize RGB LCD panel");
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ST7701S_CS_Dis();
     Backlight_Init();
+    return ESP_OK;
+}
+
+void LCD_Clear(uint16_t color)
+{
+    if (!panel_handle) {
+        return;
+    }
+
+    const int chunk_lines = 40;
+    size_t buffer_pixels = EXAMPLE_LCD_H_RES * chunk_lines;
+    uint16_t *line_buffer = heap_caps_malloc(buffer_pixels * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+    if (!line_buffer) {
+        ESP_LOGE(LCD_TAG, "Failed to allocate clear buffer");
+        return;
+    }
+
+    for (size_t i = 0; i < buffer_pixels; i++) {
+        line_buffer[i] = color;
+    }
+
+    for (int y = 0; y < EXAMPLE_LCD_V_RES; y += chunk_lines) {
+        int lines = chunk_lines;
+        if (y + lines > EXAMPLE_LCD_V_RES) {
+            lines = EXAMPLE_LCD_V_RES - y;
+        }
+        esp_lcd_panel_draw_bitmap(panel_handle, 0, y, EXAMPLE_LCD_H_RES, y + lines, line_buffer);
+    }
+
+    free(line_buffer);
+}
+
+void LCD_DrawHelloWorld(void)
+{
+    if (!panel_handle) {
+        return;
+    }
+
+    const char *text = "HELLO WORLD";
+    const int scale = 4;
+    const int glyph_w = 5 * scale;
+    const int glyph_h = 7 * scale;
+    const int spacing = 1 * scale;
+    int len = strlen(text);
+    int buffer_w = len * (glyph_w + spacing) - spacing;
+    int buffer_h = glyph_h;
+    uint16_t fg = 0xFFFF; // white
+    uint16_t bg = 0x0000; // black
+
+    uint16_t *text_buffer = heap_caps_malloc(buffer_w * buffer_h * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+    if (!text_buffer) {
+        ESP_LOGE(LCD_TAG, "Failed to allocate text buffer");
+        return;
+    }
+    for (int i = 0; i < buffer_w * buffer_h; i++) {
+        text_buffer[i] = bg;
+    }
+
+    int cursor_x = 0;
+    for (int i = 0; i < len; i++) {
+        const glyph_t *glyph = find_glyph(text[i]);
+        draw_glyph(text_buffer, buffer_w, cursor_x, 0, glyph, scale, fg, bg);
+        cursor_x += glyph_w + spacing;
+    }
+
+    int start_x = (EXAMPLE_LCD_H_RES - buffer_w) / 2;
+    int start_y = (EXAMPLE_LCD_V_RES - buffer_h) / 2;
+    esp_lcd_panel_draw_bitmap(panel_handle, start_x, start_y, start_x + buffer_w, start_y + buffer_h, text_buffer);
+
+    free(text_buffer);
 }
 
 /********************* BackLight *********************/

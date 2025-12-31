@@ -1,42 +1,87 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-/**
- * @file main.c
- * @brief Application entry point for Eldra-V2.
- */
-
 #include "eldra_display_round.h"
-#include "eldra_emotion.h"
-#include "eldra_comms.h"
 #include "eldra_logging.h"
 #include "eldra_eyes.h"
 #include "eldra_sensors.h"
+#include "eldra_emotion.h"
+#include "eldra_comms.h"
+#include "eldra_cloud.h"
+
+#include "console_app.h"
+#include "console_wifi.h"
+#include "console_sd.h"
+#include "console_rtc.h"
+#include "console_imu.h"
+#include "console_emotion.h"
+
+#include "wifi_driver.h"
+#include "sd_driver.h"
+#include "config_store.h"
+#include "imu_qmi8658.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
+#include "esp_sntp.h"
+#include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_event.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/uart.h"
 
 static const char *TAG = "app_main";
 static eldra_eyes_context_t *g_eyes_ctx = NULL;
+static emotion_context_t g_emotion = {0};
+static bool g_emotion_ready = false;
+static bool g_wifi_online = false;
+static bool g_cloud_ready = false;
+static uint64_t g_last_cloud_state_push_ms = 0;
+static bool sntp_started = false;
 
-#if defined(ELDRA_DEBUG_SET_RTC)
-// Edit these values or define ELDRA_DEBUG_SET_RTC to set RTC once at boot for validation.
-static const datetime_t k_debug_rtc_time = {
-    .year = 2025,
-    .month = 1,
-    .day = 1,
-    .dotw = 3, // Wednesday
-    .hour = 12,
-    .minute = 0,
-    .second = 0,
-};
-#endif
+typedef struct {
+    char ssid[33];
+    char pass[65];
+    bool roam;
+} auto_wifi_cfg_t;
+static auto_wifi_cfg_t s_auto_wifi_cfg = {0};
+
+static const char *emotion_state_str(emotion_state_t st)
+{
+    switch (st) {
+        case EMOTION_STATE_NEUTRAL: return "NEUTRAL";
+        case EMOTION_STATE_HAPPY: return "HAPPY";
+        case EMOTION_STATE_SAD: return "SAD";
+        case EMOTION_STATE_LONELY: return "LONELY";
+        case EMOTION_STATE_SLEEPY: return "SLEEPY";
+        case EMOTION_STATE_HUNGRY: return "HUNGRY";
+        case EMOTION_STATE_PLAYFUL: return "PLAYFUL";
+        case EMOTION_STATE_ELDRITCH: return "ELDRITCH";
+        case EMOTION_STATE_SCARED: return "SCARED";
+        case EMOTION_STATE_DIZZY: return "DIZZY";
+        default: return "UNKNOWN";
+    }
+}
+
+static eldra_eyes_mood_t mood_for_state(emotion_state_t st)
+{
+    switch (st) {
+        case EMOTION_STATE_HAPPY: return ELDRA_EYES_MOOD_HAPPY;
+        case EMOTION_STATE_SAD: return ELDRA_EYES_MOOD_SAD;
+        case EMOTION_STATE_LONELY: return ELDRA_EYES_MOOD_BORED;
+        case EMOTION_STATE_SLEEPY: return ELDRA_EYES_MOOD_SLEEPY;
+        case EMOTION_STATE_HUNGRY: return ELDRA_EYES_MOOD_HUNGRY;
+        case EMOTION_STATE_ELDRITCH: return ELDRA_EYES_MOOD_ELDRITCH_RUNE;
+        case EMOTION_STATE_SCARED: return ELDRA_EYES_MOOD_ANGRY;
+        default: return ELDRA_EYES_MOOD_NEUTRAL;
+    }
+}
 
 static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
                          float ax_g, float ay_g, float az_g, uint32_t dt_ms) {
@@ -45,53 +90,124 @@ static void imu_callback(float gx_dps, float gy_dps, float gz_dps,
     }
 }
 
-/**
- * @brief Convert epoch milliseconds to datetime_t (UTC).
- */
-/**
- * @brief Sketch of the future command/emotion plumbing without hardware drivers.
- *        Compile-time guard prevents it from running unless explicitly enabled.
- */
-static void run_emotion_backbone_demo(void) __attribute__((unused));
-static void run_emotion_backbone_demo(void) {
-    emotion_context_t emotion = {0};
-    uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+static void auto_wifi_task(void *arg)
+{
+    (void)arg;
+    const int max_attempts = 3;
+    const TickType_t attempt_delay = pdMS_TO_TICKS(20000); // 20s between attempts
+    wifi_driver_status_t st = WIFI_STATUS_IDLE;
+    wifi_ap_record_t ap = {0};
 
-    log_init();
-    // Temporarily raise console verbosity during boot for diagnostics, then fall back to ERROR.
-    log_set_console_level_temporary(LOG_LEVEL_INFO, 5000, LOG_LEVEL_ERROR);
-    if (eldra_sensors_init() != ESP_OK) {
-        EL_LOGE(TAG, "Sensor init failed; cannot run emotion demo");
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        esp_err_t w = wifi_driver_connect_best_async(s_auto_wifi_cfg.ssid, s_auto_wifi_cfg.pass);
+        if (w == ESP_OK) {
+            char logbuf[96];
+            snprintf(logbuf, sizeof(logbuf), "Auto WiFi attempt %d started", attempt);
+            sd_driver_log_async(logbuf);
+            EL_LOGI(TAG, "%s", logbuf);
+        } else {
+            char logbuf[96];
+            snprintf(logbuf, sizeof(logbuf), "Auto WiFi attempt %d failed to start: %s", attempt, esp_err_to_name(w));
+            sd_driver_log_async(logbuf);
+            EL_LOGW(TAG, "%s", logbuf);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        wifi_driver_get_status(&st, &ap);
+        if (st == WIFI_STATUS_CONNECTED) {
+            sd_driver_log_async("Auto WiFi connected");
+            EL_LOGI(TAG, "WiFi connected to \"%s\" RSSI=%d", ap.ssid, ap.rssi);
+            vTaskDelete(NULL);
+            return;
+        }
+        if (attempt < max_attempts) {
+            vTaskDelay(attempt_delay);
+        }
+    }
+    sd_driver_log_async("Auto WiFi: all retries exhausted");
+    EL_LOGW(TAG, "Auto WiFi retries exhausted");
+    vTaskDelete(NULL);
+}
+
+static void got_ip_start_sntp(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id; (void)data;
+    if (sntp_started) {
         return;
     }
-    emotion_init(&emotion, start_ms);
-    comms_init();
-    comms_commands_init(&emotion);
+    sntp_started = true;
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&cfg);
+    sd_driver_log_async("SNTP started (EST5EDT)");
+    printf("SNTP started for timezone EST5EDT\n");
+}
 
-    for (;;) {
-        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-        emotion_set_battery_percent(&emotion, eldra_sensors_get_battery_percent());
-        emotion_on_tick(&emotion, now_ms);
-        comms_process_all_pending(&emotion, now_ms);
-        vTaskDelay(pdMS_TO_TICKS(100));
+static void handle_cloud_command(const eldra_command_t *cmd)
+{
+    if (!cmd) {
+        return;
+    }
+    pet_command_t pcmd = {0};
+    switch (cmd->type) {
+        case ELDRA_CMD_TYPE_FEED: pcmd.type = CMD_FEED; pcmd.arg0 = (uint32_t)cmd->arg0; break;
+        case ELDRA_CMD_TYPE_PET: pcmd.type = CMD_PET; break;
+        case ELDRA_CMD_TYPE_PLAY: pcmd.type = CMD_PLAY; break;
+        case ELDRA_CMD_TYPE_DEBUG_FORCE_STATE: pcmd.type = CMD_DEBUG_FORCE_STATE; pcmd.arg0 = (uint32_t)cmd->arg0; break;
+        case ELDRA_CMD_TYPE_SET_FLAG: pcmd.type = CMD_SET_FLAG; pcmd.arg0 = (uint32_t)cmd->arg0; pcmd.arg1 = (uint32_t)cmd->arg1; break;
+        case ELDRA_CMD_TYPE_RFID_ITEM: pcmd.type = CMD_RESERVED_RFID; pcmd.arg0 = (uint32_t)cmd->arg0; break;
+        case ELDRA_CMD_TYPE_SERVER_SCRIPTED_EVENT: pcmd.type = CMD_RESERVED_SERVER; pcmd.arg0 = (uint32_t)cmd->arg0; break;
+        default: pcmd.type = CMD_RESERVED_SERVER; break;
+    }
+    bool ok = comms_enqueue_command(&pcmd);
+    eldra_cloud_ack_command(cmd, ok, ok ? NULL : "queue full");
+}
+
+static void update_wifi_online_flag(void)
+{
+    wifi_driver_status_t st = WIFI_STATUS_IDLE;
+    wifi_ap_record_t ap = {0};
+    wifi_driver_get_status(&st, &ap);
+    bool online = (st == WIFI_STATUS_CONNECTED);
+    if (online != g_wifi_online) {
+        g_wifi_online = online;
+        if (g_cloud_ready) {
+            eldra_cloud_set_online(online);
+        }
     }
 }
 
-/**
- * @brief Application entry point.
- *
- * Boot order:
- * 1) Initialize sensors/peripherals (I2C, IMU, RTC, SD, etc.).
- * 2) Initialize the round RGB display.
- * 3) Render the static chibi eyes into a raw framebuffer and push to the panel.
- */
-void app_main(void) {
-#if defined(ELDRA_EMOTION_BACKBONE_DEMO)
-    run_emotion_backbone_demo();
-    return;
-#endif
+static void push_cloud_state_if_ready(uint32_t now_ms)
+{
+    if (!g_cloud_ready) {
+        return;
+    }
+    if (now_ms - (uint32_t)g_last_cloud_state_push_ms < 1000U) {
+        return;
+    }
+    g_last_cloud_state_push_ms = now_ms;
 
+    eldra_state_t st = {0};
+    st.emotion_state = emotion_state_str(g_emotion.current_state);
+    st.happiness = g_emotion.happiness;
+    st.hunger = g_emotion.hunger;
+    st.energy = g_emotion.energy;
+    st.social = g_emotion.social;
+    st.fear = g_emotion.fear;
+    st.eldritch_charge = g_emotion.eldritch_charge;
+    st.battery_percentage = (int)eldra_sensors_get_battery_percent();
+    st.battery_voltage_mv = (int)(eldra_sensors_get_battery_voltage() * 1000.0f);
+    st.battery_is_charging = false;
+    st.flag_asleep = false;
+    st.flag_low_power = false;
+    st.flag_debug_mode = false;
+    eldra_cloud_set_state(&st);
+}
+
+void app_main(void) {
     log_init();
+    log_set_console_level(LOG_LEVEL_INFO);
+    esp_log_level_set("*", ESP_LOG_INFO);
+    EL_LOGI(TAG, "app_main start");
 
     if (eldra_sensors_init() != ESP_OK) {
         EL_LOGE(TAG, "Sensor init failed; holding");
@@ -99,32 +215,123 @@ void app_main(void) {
     }
     EL_LOGI(TAG, "Sensors init complete");
 
-    // Initialize command router (shared by UART console and future HTTP) with no emotion context yet.
-    comms_commands_init(NULL);
-    // Start interactive console for commands/log retrieval.
-    comms_console_start();
-
-#if defined(ELDRA_DEBUG_SET_RTC)
-    // One-shot RTC set for backup-battery validation.
-    if (eldra_sensors_rtc_set(&k_debug_rtc_time) != ESP_OK) {
-        EL_LOGW(TAG, "RTC set failed");
-    } else {
-        datetime_t now = {0};
-        eldra_sensors_rtc_get(&now);
-        char ts[64] = {0};
-        datetime_to_str(ts, now);
-        EL_LOGI(TAG, "RTC now %s (debug set enabled)", ts);
-    }
-#endif
-
     if (eldra_display_round_init() != ESP_OK) {
         EL_LOGE(TAG, "Display init failed; holding");
         goto fail_safe;
     }
-    EL_LOGI(TAG, "Display init complete");
-
-    // Ensure the backlight is on (vendor default may be 0).
     eldra_display_round_set_backlight(90);
+
+    comms_init();
+    uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    emotion_init(&g_emotion, start_ms);
+    g_emotion_ready = true;
+
+    if (ConsoleEmotion_Init(&g_emotion) != ESP_OK) {
+        EL_LOGW(TAG, "Emotion console init failed");
+    }
+
+    if (Console_Init() != ESP_OK) {
+        EL_LOGW(TAG, "Console init failed");
+    }
+    if (ConsoleWiFi_Init() != ESP_OK) {
+        EL_LOGW(TAG, "WiFi console init failed");
+    }
+    if (ConsoleSD_Init() != ESP_OK) {
+        EL_LOGW(TAG, "SD console init failed");
+    }
+    if (ConsoleRTC_Init() != ESP_OK) {
+        EL_LOGW(TAG, "RTC console init failed");
+    }
+    if (ConsoleIMU_Init() != ESP_OK) {
+        EL_LOGW(TAG, "IMU console init failed");
+    }
+
+    esp_err_t e = esp_netif_init();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        EL_LOGW(TAG, "netif init failed: %s", esp_err_to_name(e));
+    }
+    e = esp_event_loop_create_default();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        EL_LOGW(TAG, "event loop init failed: %s", esp_err_to_name(e));
+    }
+
+    setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
+    tzset();
+    static esp_event_handler_instance_t ip_handler;
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        got_ip_start_sntp, NULL, &ip_handler);
+
+    config_store_t cfg = {0};
+    bool cfg_loaded = false;
+    if (sd_driver_init() == ESP_OK) {
+        log_sd_notify_mounted();
+        if (config_store_load(&cfg) == ESP_OK) {
+            cfg_loaded = true;
+        } else {
+            EL_LOGW(TAG, "Config load failed");
+        }
+    } else {
+        EL_LOGW(TAG, "SD init failed; skipping config load");
+    }
+
+    if (cfg_loaded) {
+        if (cfg.wifi_ssid[0] == '\0') {
+            FILE *wf = fopen("/sdcard/WIFI/WIFI.CFG", "r");
+            if (wf) {
+                char line[96];
+                while (fgets(line, sizeof(line), wf)) {
+                    if (strncmp(line, "ssid=", 5) == 0) {
+                        strlcpy(cfg.wifi_ssid, line + 5, sizeof(cfg.wifi_ssid));
+                        cfg.wifi_ssid[strcspn(cfg.wifi_ssid, "\r\n")] = 0;
+                    } else if (strncmp(line, "pass=", 5) == 0) {
+                        strlcpy(cfg.wifi_pass, line + 5, sizeof(cfg.wifi_pass));
+                        cfg.wifi_pass[strcspn(cfg.wifi_pass, "\r\n")] = 0;
+                    }
+                }
+                fclose(wf);
+            }
+        }
+
+        if (cfg.auto_init_wifi) {
+            if (cfg.wifi_ssid[0] != '\0') {
+                wifi_driver_set_roaming(cfg.wifi_roam);
+                strlcpy(s_auto_wifi_cfg.ssid, cfg.wifi_ssid, sizeof(s_auto_wifi_cfg.ssid));
+                strlcpy(s_auto_wifi_cfg.pass, cfg.wifi_pass, sizeof(s_auto_wifi_cfg.pass));
+                s_auto_wifi_cfg.roam = cfg.wifi_roam;
+                if (xTaskCreatePinnedToCore(auto_wifi_task, "auto_wifi", 4096, NULL, 4, NULL, 0) != pdPASS) {
+                    sd_driver_log_async("Auto WiFi task create failed");
+                    EL_LOGE(TAG, "Auto WiFi: failed to create retry task");
+                } else {
+                    EL_LOGI(TAG, "Auto WiFi retry task started for \"%s\"", cfg.wifi_ssid);
+                    sd_driver_log_async("Auto WiFi retry task started");
+                }
+            } else {
+                EL_LOGW(TAG, "Auto WiFi enabled but no saved credentials");
+                sd_driver_log_async("Auto WiFi: no saved credentials");
+            }
+        }
+
+        if (cfg.auto_init_imu) {
+            esp_err_t ir = qmi8658_init();
+            if (ir == ESP_OK) {
+                sd_driver_log_async("IMU auto-init OK");
+            } else {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "IMU auto-init failed: %s", esp_err_to_name(ir));
+                sd_driver_log_async(msg);
+                EL_LOGW(TAG, "%s", msg);
+            }
+        }
+
+        if (cfg.auto_init_cloud && cfg.cloud_base_url[0] != '\0' && cfg.cloud_token[0] != '\0') {
+            eldra_cloud_init(cfg.cloud_base_url, cfg.cloud_token);
+            eldra_cloud_register_command_handler(handle_cloud_command);
+            eldra_cloud_set_online(false);
+            g_cloud_ready = true;
+        }
+    } else {
+        EL_LOGW(TAG, "Config not loaded; auto-init skipped");
+    }
 
     const int fb_width = eldra_display_round_get_width();
     const int fb_height = eldra_display_round_get_height();
@@ -134,10 +341,10 @@ void app_main(void) {
         EL_LOGE(TAG, "Failed to create eyes context; holding");
         goto fail_safe;
     }
+    // Apply persisted eye center offsets if available.
+    eldra_eyes_set_center_offset(cfg.eyes_center_x_offset, cfg.eyes_center_y_offset);
     g_eyes_ctx = eyes_ctx;
-    EL_LOGI(TAG, "Eyes context created");
     eldra_sensors_set_imu_callback(imu_callback);
-    EL_LOGI(TAG, "IMU callback registered");
 
     size_t buf_size_bytes = (size_t)fb_width * (size_t)fb_height * sizeof(uint16_t);
     uint16_t *framebuffer = (uint16_t *)heap_caps_malloc(buf_size_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -149,7 +356,6 @@ void app_main(void) {
         }
     }
 
-    // Sanity: draw a solid test frame once so we know the panel path works.
     for (size_t i = 0; i < (size_t)fb_width * (size_t)fb_height; ++i) {
         framebuffer[i] = 0xFFFF; // white
     }
@@ -157,9 +363,7 @@ void app_main(void) {
     EL_LOGI(TAG, "Test pattern blit result=%d", test_blit);
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    // Simple real-time loop (~60 FPS): update eyes, render, and push to panel.
     uint64_t last_us = esp_timer_get_time();
-
     while (1) {
         uint64_t now_us = esp_timer_get_time();
         uint32_t dt_ms = (uint32_t)((now_us - last_us) / 1000ULL);
@@ -167,6 +371,21 @@ void app_main(void) {
             dt_ms = 1;
         }
         last_us = now_us;
+
+        uint32_t now_ms = (uint32_t)(now_us / 1000ULL);
+
+        if (g_emotion_ready) {
+            emotion_set_battery_percent(&g_emotion, eldra_sensors_get_battery_percent());
+            emotion_on_tick(&g_emotion, now_ms);
+            comms_process_all_pending(&g_emotion, now_ms);
+            eldra_eyes_mood_t desired = mood_for_state(g_emotion.current_state);
+            if (eldra_eyes_get_mood(eyes_ctx) != desired) {
+                eldra_eyes_set_mood(eyes_ctx, desired);
+            }
+        }
+
+        update_wifi_online_flag();
+        push_cloud_state_if_ready(now_ms);
 
         eldra_eyes_update(eyes_ctx, dt_ms);
         eldra_eyes_render(eyes_ctx, framebuffer, (uint16_t)fb_width, (uint16_t)fb_height);
@@ -179,9 +398,7 @@ void app_main(void) {
     }
 
 fail_safe:
-    // Fail-safe steady state: sleep indefinitely to prevent watchdog spam/log floods.
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
-

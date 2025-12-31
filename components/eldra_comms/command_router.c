@@ -100,6 +100,16 @@ static bool cmd_logs(const char *args) {
     return true;
 }
 
+static void format_datetime_str(char *buf, size_t len, const datetime_t *dt)
+{
+    if (!buf || !dt) {
+        return;
+    }
+    snprintf(buf, len, "%02u/%02u/%04u %02u:%02u:%02u",
+             (unsigned)dt->day, (unsigned)dt->month, (unsigned)dt->year,
+             (unsigned)dt->hour, (unsigned)dt->minute, (unsigned)dt->second);
+}
+
 static bool cmd_settime(const char *args) {
     if (!args || !*args) {
         log_event(LOG_LEVEL_WARN, TAG, "SETTIME requires epoch ms/seconds or dd/mm/yyyy-HH:MM:SS");
@@ -147,7 +157,7 @@ static bool cmd_settime(const char *args) {
         return true;
     }
     char ts[64] = {0};
-    datetime_to_str(ts, dt);
+    format_datetime_str(ts, sizeof(ts), &dt);
     log_event(LOG_LEVEL_INFO, TAG, "RTC set to %s", ts);
     return true;
 }
@@ -173,7 +183,7 @@ static bool cmd_setdate(const char *args) {
         return true;
     }
     char ts[64] = {0};
-    datetime_to_str(ts, current);
+    format_datetime_str(ts, sizeof(ts), &current);
     log_event(LOG_LEVEL_INFO, TAG, "RTC date set to %s", ts);
     return true;
 }
@@ -199,7 +209,7 @@ static bool cmd_setclock(const char *args) {
         return true;
     }
     char ts[64] = {0};
-    datetime_to_str(ts, current);
+    format_datetime_str(ts, sizeof(ts), &current);
     log_event(LOG_LEVEL_INFO, TAG, "RTC time set to %s", ts);
     return true;
 }

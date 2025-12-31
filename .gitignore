@@ -2,3 +2,5 @@ build/
 sdkconfig
 sdkconfig.old
 wifi.secrets.env
+Driver Demo/
+log.Eldra_V2.*

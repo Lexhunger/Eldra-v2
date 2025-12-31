@@ -1,37 +1,17 @@
 idf_component_register(
     SRCS
         "eldra_sensors.c"
-        "I2C_Driver.c"
-        "TCA9554PWR.c"
         "BAT_Driver.c"
-        "PCF85063.c"
-        "QMI8658.c"
-        "SD_MMC.c"
-        "Wireless.c"
         "Button_Driver.c"
         "multi_button.c"
-        "Buzzer.c"
-        "bt_stubs.c"
     INCLUDE_DIRS "."
     REQUIRES
         driver
         freertos
         esp_timer
-        nvs_flash
-        esp_wifi
-        bt
-        esp_netif
         esp_adc
-        vfs
-        fatfs
-        sdmmc
-        spi_flash
         eldra_logging
-    PRIV_INCLUDE_DIRS
-        ${IDF_PATH}/components/bt/include/esp32c3/include
-        ${IDF_PATH}/components/bt/include
-        ${IDF_PATH}/components/bt/common/osi/include
-        ${IDF_PATH}/components/bt/common/api/include/api
-        ${IDF_PATH}/components/bt/common/btc/profile/esp/include
-        ${IDF_PATH}/components/bt/host/bluedroid/api/include/api
+        imu_qmi8658
+        exio
+        rtc_driver
 )

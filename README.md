@@ -142,7 +142,8 @@ Eldra_V2/
 
 ## Setup Prerequisites
 - Install ESP-IDF 5.5.1 and ensure its tools are on PATH.
-- Activate the ESP-IDF environment (PowerShell helper): `idf55`
+- Activate the ESP-IDF environment (PowerShell helper): `idf55`  
+  - `idf55` sets `IDF_PATH=C:\Users\bmpor\esp\v5.5.1\esp-idf` and activates the bundled Python/toolchain environment for this project.
 - Set the build target once per build directory: `idf.py set-target esp32s3`
 
 ## Build & Flash

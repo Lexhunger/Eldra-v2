@@ -6,6 +6,11 @@ This document explains how the firmware pieces fit together today and what is pl
 - `app_main` (see `main/main.c`) initializes sensors, then the display/LVGL stack, and currently launches the vendor LVGL demo as a temporary debug surface.
 - A simple loop calls `lv_timer_handler()` every ~10 ms. Later this loop will hand control to the Eldra eyes renderer instead of the vendor demo UI.
 
+## Building & Environment (Windows, your setup)
+- Open PowerShell and run your custom helper to load ESP-IDF 5.5.1: `idf55`
+  - `idf55` sets `IDF_PATH` to `C:\Users\bmpor\esp\v5.5.1\esp-idf` and activates the matching Python/toolchain env.
+- Then build/flash as usual: `idf.py build`, `idf.py -p COM10 flash monitor`
+
 ## Components
 - `components/eldra_display_round/`
   - Wraps vendor panel + LVGL bring-up (`eldra_display_round_init`), backlight control, and exposes panel dimensions. Keeps the rest of the firmware insulated from panel specifics.

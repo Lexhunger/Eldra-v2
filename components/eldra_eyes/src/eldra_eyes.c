@@ -15,6 +15,16 @@
 
 static const char *TAG = "eldra_eyes";
 
+// Small manual offsets to fine-tune placement on the round LCD. Defaults to centered.
+#ifndef ELDRA_EYES_CENTER_X_OFFSET
+#define ELDRA_EYES_CENTER_X_OFFSET 0
+#endif
+#ifndef ELDRA_EYES_CENTER_Y_OFFSET
+#define ELDRA_EYES_CENTER_Y_OFFSET 0
+#endif
+static int s_center_x_offset = ELDRA_EYES_CENTER_X_OFFSET;
+static int s_center_y_offset = ELDRA_EYES_CENTER_Y_OFFSET;
+
 static const int k_breath_period_ms = 1500;
 static const int k_breath_scale_amp = 1; // reduced amplitude for subtler motion
 static const int k_breath_offset_amp_px = 3;
@@ -26,6 +36,12 @@ static const float k_imu_gyro_dizzy_thresh_dps = 180.0f;
 static const uint32_t k_imu_gyro_dizzy_time_ms = 400;
 static const uint32_t k_dizzy_cooldown_ms = 4000;
 static const uint32_t k_imu_log_interval_ms = 1500;
+
+static inline int clamp_int(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
 
 /* Idle clip identifiers */
 typedef enum {
@@ -545,6 +561,13 @@ void eldra_eyes_destroy(eldra_eyes_context_t *ctx)
     free(ctx);
 }
 
+void eldra_eyes_set_center_offset(int x_offset, int y_offset)
+{
+    s_center_x_offset = x_offset;
+    s_center_y_offset = y_offset;
+    EL_LOGI(TAG, "Eyes center offset set to x=%d y=%d", s_center_x_offset, s_center_y_offset);
+}
+
 void eldra_eyes_set_mode(eldra_eyes_context_t *ctx, eldra_eyes_mode_t mode)
 {
     if (!ctx) {
@@ -799,8 +822,8 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
     const uint8_t (*eye_frame)[11] = look_sequence_frame(ctx);
     const int sprite_px_x = 11 * scale_x;
     const int sprite_px_y_nominal = 11 * scale_y_base;
-    const int center_y = fb_height / 2;         // Center vertically
-    const int center_x = fb_width / 2;
+    const int center_y = (fb_height / 2) + s_center_y_offset;
+    const int center_x = (fb_width / 2) + s_center_x_offset;
     const int eye_offset = (sprite_px_x * 3) / 4; // Horizontal offset from center
 
     const int base_y0 = center_y - (sprite_px_y_nominal / 2);
@@ -879,6 +902,16 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
 
     int left_x0 = (center_x - eye_offset) - (sprite_px_x / 2);
     int right_x0 = (center_x + eye_offset) - (sprite_px_x / 2);
+
+    // Clamp positions to framebuffer bounds so we never wrap or draw outside.
+    const int min_x = 0;
+    const int max_x = fb_width - sprite_px_x;
+    const int min_y = 0;
+    const int max_y = fb_height - sprite_px_y_nominal;
+    left_x0 = clamp_int(left_x0, min_x, max_x);
+    right_x0 = clamp_int(right_x0, min_x, max_x);
+    left_y0 = clamp_int(left_y0, min_y, max_y);
+    right_y0 = clamp_int(right_y0, min_y, max_y);
 
     if (reactive_dizzy) {
         float spin_phase = ((float)ctx->reactive_dizzy.elapsed_ms / 1000.0f) * (k_two_pi * 2.5f); // ~2.5 turns per second
