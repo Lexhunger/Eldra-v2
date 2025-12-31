@@ -11,7 +11,11 @@
 esp_err_t eldra_display_round_init(void) {
     // Initialize the RGB panel (LVGL demo removed; we blit directly).
     ESP_LOGI("eldra_display_round", "LCD_Init start");
-    LCD_Init();
+    esp_err_t ret = LCD_Init();
+    if (ret != ESP_OK) {
+        ESP_LOGE("eldra_display_round", "LCD_Init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI("eldra_display_round", "LCD_Init done (LVGL skipped; using direct blits)");
     return ESP_OK;
 }

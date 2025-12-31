@@ -1,4 +1,5 @@
 #pragma once
+// ST7701S panel low-level driver: config macros and APIs for panel init and basic drawing.
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -9,17 +10,30 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
-#include "TCA9554PWR.h"
+#include <stdint.h>
 
 #define SPI_METHOD 1
 #define IOEXPANDER_METHOD 0
+
+/* Control-line routing fixed for ESP32-S3-Touch-LCD-2.8C:
+ * Reset/CS are on TCA9554 IO1/IO3; backlight is direct on GPIO6.
+ * These are locked so higher layers cannot override and accidentally break bring-up.
+ */
+#define LCD_RESET_VIA_EXIO 1
+#define LCD_CS_VIA_EXIO    1
+#define LCD_RESET_GPIO     -1  // unused because reset is via EXIO
+#define LCD_CS_GPIO        -1  // unused because CS is via EXIO
 
 
 /********************* LCD *********************/
 
 #define LCD_MOSI 1
 #define LCD_SCLK 2
-#define LCD_CS  -1      // Using EXIO
+#if LCD_CS_VIA_EXIO
+#define LCD_CS  -1      // Using EXIO (manual CS)
+#else
+#define LCD_CS  LCD_CS_GPIO
+#endif
 // The pixel number in horizontal and vertical
 #define EXAMPLE_LCD_V_RES              480
 #define EXAMPLE_LCD_H_RES              480
@@ -95,7 +109,9 @@ esp_err_t ST7701S_reinit_sequence(void);// Re-run ST7701S screen init on existin
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void LCD_Init(void);
+esp_err_t LCD_Init(void);
+void LCD_Clear(uint16_t color);
+void LCD_DrawHelloWorld(void);
 
 /********************* BackLight *********************/
 void Backlight_Init(void);

@@ -23,11 +23,11 @@ parameter:
             
 Info:Initiate Normal Mode, RTC Run, NO reset, No correction , 24hr format, Internal load capacitane 12.5pf
 ******************************************************************************/
-void PCF85063_Init()
+esp_err_t PCF85063_Init()
 {
 	uint8_t Value = RTC_CTRL_1_DEFAULT|RTC_CTRL_1_CAP_SEL;
 
-	ESP_ERROR_CHECK(I2C_Write(PCF85063_ADDRESS, RTC_CTRL_1_ADDR, &Value, 1));
+	return I2C_Write(PCF85063_ADDRESS, RTC_CTRL_1_ADDR, &Value, 1);
 
 	// datetime_t Now_datetime= {0};
 	// Now_datetime.year = 2024;

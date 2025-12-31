@@ -73,7 +73,7 @@ typedef struct {
 
 extern datetime_t datetime;
 
-void PCF85063_Init(void);
+esp_err_t PCF85063_Init(void);
 void RTC_Loop(void);
 void PCF85063_Reset(void);
 

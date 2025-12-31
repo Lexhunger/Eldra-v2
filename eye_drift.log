@@ -1,0 +1,18 @@
+Correction #1
+eyes: center_x_offset=-46 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+
+correction #2
+position note:
+one eye centre, one eye on edge wrapped half on right edge half on left edge
+Before:center_x_offset=-46 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+After:center_x_offset=58 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+
+correction #3
+position note: right eye sligtly over edge with two lines showing on left side
+Before:center_x_offset=58 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+After:center_x_offset=0 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+
+correction #4
+position note: eyes centered to the left
+Before:center_x_offset=0 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
+After:center_x_offset=-40 center_y_offset=0 display_center_x_offset=0 display_center_y_offset=0
