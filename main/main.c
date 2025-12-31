@@ -32,6 +32,7 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_event.h"
+#include "driver/gpio.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

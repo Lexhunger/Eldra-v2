@@ -104,6 +104,10 @@ void ST7701S_screen_init(ST7701S_handle St7701S_handle, unsigned char type);//Sc
 void ST7701S_delObject(ST7701S_handle St7701S_handle);//Delete object
 void ST7701S_WriteCommand(ST7701S_handle St7701S_handle, uint8_t cmd);//SPI write instruction
 void ST7701S_WriteData(ST7701S_handle St7701S_handle, uint8_t data);//SPI write data
+esp_err_t ST7701S_CS_EN(void);//Enables SPI CS
+esp_err_t ST7701S_CS_Dis(void);//Disable SPI CS
+esp_err_t ST7701S_reset(void);// LCD Reset
+esp_err_t ST7701S_reinit_sequence(void);// Re-run ST7701S screen init on existing handle
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

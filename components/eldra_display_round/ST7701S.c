@@ -5,7 +5,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include "esp_heap_caps.h"
+#include "freertos/semphr.h"
 
 #if LCD_RESET_VIA_EXIO || LCD_CS_VIA_EXIO
 #include "TCA9554PWR.h"
@@ -14,8 +16,12 @@
 #define Delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
 
 static const char *LCD_TAG = "LCD";
-static ST7701S_handle st7701s_handle = NULL;
+static ST7701S_handle s_st7701s = NULL;
 esp_lcd_panel_handle_t panel_handle = NULL;
+#if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
+SemaphoreHandle_t sem_vsync_end = NULL;
+SemaphoreHandle_t sem_gui_ready = NULL;
+#endif
 
 typedef struct {
     char c;
@@ -441,7 +447,7 @@ static esp_err_t ST7701S_reset(void)
 }
 
 // Manual chip-select handling (EXIO or direct GPIO)
-static esp_err_t ST7701S_CS_EN(void)
+esp_err_t ST7701S_CS_EN(void)
 {
 #if LCD_CS_VIA_EXIO
     Set_EXIO(TCA9554_EXIO3,false);
@@ -454,7 +460,7 @@ static esp_err_t ST7701S_CS_EN(void)
     vTaskDelay(pdMS_TO_TICKS(10));
     return ESP_OK;
 }
-static esp_err_t ST7701S_CS_Dis(void)
+esp_err_t ST7701S_CS_Dis(void)
 {
 #if LCD_CS_VIA_EXIO
     Set_EXIO(TCA9554_EXIO3,true);
@@ -529,12 +535,19 @@ esp_err_t LCD_Init(void)
     ST7701S_reset();
     ST7701S_CS_EN();
     vTaskDelay(pdMS_TO_TICKS(100));
-    st7701s_handle = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
-    if (!st7701s_handle) {
+    s_st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
+    if (!s_st7701s) {
         return ESP_ERR_NO_MEM;
     }
     
-    ST7701S_screen_init(st7701s_handle, 1);
+    ST7701S_screen_init(s_st7701s, 1);
+#if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
+    ESP_LOGI(LCD_TAG, "Create semaphores");
+    sem_vsync_end = xSemaphoreCreateBinary();
+    assert(sem_vsync_end);
+    sem_gui_ready = xSemaphoreCreateBinary();
+    assert(sem_gui_ready);
+#endif
 
     ESP_LOGI(LCD_TAG, "Install RGB LCD panel driver");
     esp_lcd_rgb_panel_config_t panel_config = {
