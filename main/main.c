@@ -276,6 +276,9 @@ void app_main(void) {
     }
     EL_LOGI(TAG, "Sensors init complete");
 
+    // Small settle to let rails stabilize before the LCD pulls current.
+    vTaskDelay(pdMS_TO_TICKS(200));
+
     if (eldra_display_round_init() != ESP_OK) {
         EL_LOGE(TAG, "Display init failed; holding");
         goto fail_safe;

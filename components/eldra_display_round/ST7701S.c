@@ -677,6 +677,22 @@ void LCD_DrawHelloWorld(void)
     free(text_buffer);
 }
 
+/********************* Reinit helper *********************/
+esp_err_t ST7701S_reinit_sequence(void)
+{
+    if (!s_st7701s) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = ST7701S_reset();
+    if (err != ESP_OK) {
+        return err;
+    }
+    ST7701S_CS_EN();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ST7701S_screen_init(s_st7701s, 1);
+    return ESP_OK;
+}
+
 /********************* BackLight *********************/
 static void example_ledc_init(void)
 {
@@ -702,6 +718,8 @@ static void example_ledc_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
+
+// Vendor default backlight level at init (will be overridden by app_main).
 uint8_t LCD_Backlight = 70;
 void Backlight_Init(void)
 {
