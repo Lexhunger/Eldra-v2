@@ -175,8 +175,11 @@ static int cmd_config_show(int argc, char **argv)
            cfg.auto_init_cloud ? "true" : "false",
            cfg.cloud_base_url,
            cfg.cloud_token[0] ? "***" : "(empty)");
-    printf("  eyes: center_x_offset=%d center_y_offset=%d\n",
-           cfg.eyes_center_x_offset, cfg.eyes_center_y_offset);
+    printf("  eyes: center_x_offset=%d center_y_offset=%d display_center_x_offset=%d display_center_y_offset=%d\n",
+           cfg.eyes_center_x_offset, cfg.eyes_center_y_offset,
+           cfg.display_center_x_offset, cfg.display_center_y_offset);
+    printf("  sleep: start_hour=%d end_hour=%d\n", cfg.sleep_start_hour, cfg.sleep_end_hour);
+    printf("  emotion: mood_log_interval_minutes=%d\n", cfg.mood_log_interval_minutes);
     return 0;
 }
 

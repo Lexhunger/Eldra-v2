@@ -22,6 +22,7 @@
 static const char *TAG = "eldra_sensors";
 static eldra_sensors_imu_cb_t s_imu_cb = NULL;
 static float s_battery_volts = 0.0f;
+static float s_battery_volts_filtered = 0.0f;
 static uint8_t s_battery_percent = 0;
 static uint64_t s_last_batt_log_ms = 0;
 static const uint64_t BATTERY_LOG_INTERVAL_MS = 300000ULL; // 5 minutes
@@ -70,12 +71,25 @@ static void imu_poll_task(void *arg) {
         }
 
         float volts = BAT_Get_Volts();
-        s_battery_volts = volts;
-        s_battery_percent = battery_voltage_to_percent(volts);
+        // Light smoothing to avoid percentage flicker near full charge.
+        if (s_battery_volts_filtered == 0.0f) {
+            s_battery_volts_filtered = volts;
+        } else {
+            s_battery_volts_filtered = (s_battery_volts_filtered * 0.9f) + (volts * 0.1f);
+        }
+        s_battery_volts = s_battery_volts_filtered;
+        uint8_t pct = battery_voltage_to_percent(s_battery_volts_filtered);
+        // Gentle top-end hysteresis: once we're basically full, hold 100% until we sag well below.
+        if (s_battery_percent >= 99 && s_battery_volts_filtered >= 4.08f) {
+            pct = 100;
+        } else if (s_battery_volts_filtered >= 4.12f) {
+            pct = 100;
+        }
+        s_battery_percent = pct;
         uint64_t now_ms = now_us / 1000ULL;
         if (now_ms - s_last_batt_log_ms >= BATTERY_LOG_INTERVAL_MS) {
-            log_event(LOG_LEVEL_INFO, "battery", "battery=%.2fV (~%u%%)", volts,
-                      (unsigned int)s_battery_percent);
+            log_event(LOG_LEVEL_INFO, "battery", "battery=%.2fV (~%u%%)", s_battery_volts,
+                      (unsigned int)pct);
             s_last_batt_log_ms = now_ms;
         }
 

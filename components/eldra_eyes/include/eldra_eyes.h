@@ -10,6 +10,7 @@
  * Rendering and clip selection are defined in docs/eldra_eyes_animation.md.
  */
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum {
     ELDRA_EYES_MODE_CHIBI = 0,
@@ -137,5 +138,15 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
  * without rebuilding.
  */
 void eldra_eyes_set_center_offset(int x_offset, int y_offset);
+
+/**
+ * @brief Toggle a test pattern (border + crosshair) to validate centering/edges.
+ */
+void eldra_eyes_set_test_pattern(bool enable);
+
+/**
+ * @brief Set a global display center offset (applies to target/current centers).
+ */
+void eldra_eyes_set_display_center_offset(int x_offset, int y_offset);
 
 #endif /* ELDRA_EYES_H */

@@ -4,6 +4,14 @@ A cosmic-horror-cute desktop pet powered by ESP-IDF 5.5.1 and the Waveshare ESP3
 ## Project Overview
 Eldra is a small eldritch-cute desktop pet built on an ESP32-S3 with a round TFT display, sensors, haptics, and servos. It will juggle emotional states, react to touchless inputs, and express itself through animated eyes, vibration, audio chirps, and light motion while logging its inner life for later replay.
 
+## Current Status (Dec 2025)
+- Eyes: Centering tools (test pattern, `disp_center`, `eyes_offset`), newline/prompt fixes, battery console command, and SD/Wi-Fi/RTC/IMU console bridges merged from the driver demo.
+- Emotion Engine: Satiety bands (hungry/hangry/stuffed/food-coma), time-based decay, quiet-hours auto-sleep (10p–8a idle 10m), affect + needs mask for blended expressions, gated eldritch (only when fed/energized).
+- Config: `sleep.start_hour/end_hour`, `emotion.mood_log_interval_minutes` (0=off) now persisted on SD.
+- Console controls: `emo_feed 0|1|2` (big/small/snack), `emo_pet [small|big]`, `emo_play`, `emo_state`, `emo_state_show` / `emo_needs`, battery readout, eyes test/offset commands.
+- Sensors: IMU shake → dizzy/fear; edge trigger; battery smoothing with hysteresis; EXIO/wifi/sd bridges online.
+- Build: ESP-IDF 5.5.1, `idf55` helper to enter the env; `idf.py build/flash/monitor`.
+
 ## High-Level Architecture
 - **Emotion Engine (brain):** Tracks meters (hunger, happiness, energy, social, fear, eldritch charge) and selects a named state that drives animations and haptics.
 - **Comms & Logging Backbone:** BLE + IR inputs (RFID future), Wi-Fi server sync, and SD logging funnel events into a common command queue while exporting telemetry.

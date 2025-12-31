@@ -17,6 +17,11 @@ typedef struct {
     char cloud_token[64];
     int eyes_center_x_offset;
     int eyes_center_y_offset;
+    int display_center_x_offset;
+    int display_center_y_offset;
+    int sleep_start_hour;          // 0-23
+    int sleep_end_hour;            // 0-23
+    int mood_log_interval_minutes; // 0 = disable, otherwise minutes between emotion logs
 } config_store_t;
 
 /**

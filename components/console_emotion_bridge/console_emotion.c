@@ -60,7 +60,7 @@ static emotion_state_t parse_state(const char *s, bool *ok)
 
 static int cmd_feed(int argc, char **argv)
 {
-    uint32_t food = 0;
+    uint32_t food = 0; // 0=big, 1=small, 2=snack
     if (argc >= 2) {
         food = (uint32_t)strtoul(argv[1], NULL, 10);
     }
@@ -68,19 +68,28 @@ static int cmd_feed(int argc, char **argv)
     if (!comms_enqueue_command(&cmd)) {
         printf("Queue full\n");
     } else {
-        printf("Queued FEED (%lu)\n", (unsigned long)food);
+        const char *label = (food == 0) ? "BIG" : (food == 1) ? "SMALL" : "SNACK";
+        printf("Queued FEED %s (%lu)\n", label, (unsigned long)food);
     }
     return 0;
 }
 
 static int cmd_pet(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    pet_command_t cmd = {.type = CMD_PET};
+    uint32_t size = 0; // 0=small,1=big
+    if (argc >= 2) {
+        if (strcasecmp(argv[1], "big") == 0 || strcasecmp(argv[1], "large") == 0) {
+            size = 1;
+        } else {
+            size = (uint32_t)strtoul(argv[1], NULL, 10);
+            if (size > 1) size = 1;
+        }
+    }
+    pet_command_t cmd = {.type = CMD_PET, .arg0 = size};
     if (!comms_enqueue_command(&cmd)) {
         printf("Queue full\n");
     } else {
-        printf("Queued PET\n");
+        printf("Queued PET (%s)\n", size ? "big" : "small");
     }
     return 0;
 }
@@ -126,21 +135,48 @@ static int cmd_state_show(int argc, char **argv)
         return 0;
     }
     printf("Emotion state: %s (%d)\n", state_name(s_ctx->current_state), (int)s_ctx->current_state);
-    printf("Meters: happy=%u hunger=%u energy=%u social=%u fear=%u eldritch=%u batt=%u%%\n",
+    printf("Meters: happy=%u hunger(satiety)=%u energy=%u social=%u fear=%u eldritch=%u batt=%u%%\n",
            s_ctx->happiness, s_ctx->hunger, s_ctx->energy, s_ctx->social,
            s_ctx->fear, s_ctx->eldritch_charge, s_ctx->battery_percent);
+    emotion_need_mask_t needs = emotion_get_needs(s_ctx);
+    int8_t val = 0, aro = 0;
+    emotion_affect_t aff = emotion_get_affect(s_ctx, &val, &aro);
+    const char *aff_name = "NEUTRAL";
+    switch (aff) {
+        case EMO_AFFECT_HAPPY: aff_name = "HAPPY"; break;
+        case EMO_AFFECT_SAD: aff_name = "SAD"; break;
+        case EMO_AFFECT_ANGRY: aff_name = "ANGRY"; break;
+        case EMO_AFFECT_EXCITED: aff_name = "EXCITED"; break;
+        default: break;
+    }
+    printf("Needs mask: 0x%02X (HUNGRY=%d LONELY=%d SLEEPY=%d SCARED=%d PLAYFUL=%d ELDRITCH_READY=%d)\n",
+           needs,
+           !!(needs & EMO_NEED_HUNGRY),
+           !!(needs & EMO_NEED_LONELY),
+           !!(needs & EMO_NEED_SLEEPY),
+           !!(needs & EMO_NEED_SCARED),
+           !!(needs & EMO_NEED_PLAYFUL),
+           !!(needs & EMO_NEED_ELDRITCH_READY));
+    printf("Affect: %s valence=%d arousal=%d\n", aff_name, (int)val, (int)aro);
     return 0;
 }
 
 static int cmd_eyes_offset(int argc, char **argv)
 {
     if (argc < 3) {
-        printf("Usage: eyes_offset <x_px> <y_px> [persist]\n");
+        printf("Usage: eyes_offset <x_px> <y_px> [persist|temp]\n");
         return 0;
     }
     int x = (int)strtol(argv[1], NULL, 10);
     int y = (int)strtol(argv[2], NULL, 10);
-    bool persist = (argc >= 4 && strcasecmp(argv[3], "persist") == 0);
+    bool persist = true;
+    if (argc >= 4) {
+        if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(argv[3], "persist") == 0) {
+            persist = true;
+        }
+    }
     eldra_eyes_set_center_offset(x, y);
     if (persist) {
         config_store_t cfg;
@@ -161,6 +197,62 @@ static int cmd_eyes_offset(int argc, char **argv)
     return 0;
 }
 
+static int cmd_eyes_test(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: eyes_test on|off\n");
+        return 0;
+    }
+    bool enable = false;
+    if (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "enable") == 0) {
+        enable = true;
+    } else if (strcasecmp(argv[1], "off") == 0 || strcasecmp(argv[1], "disable") == 0) {
+        enable = false;
+    } else {
+        printf("Usage: eyes_test on|off\n");
+        return 0;
+    }
+    eldra_eyes_set_test_pattern(enable);
+    printf("Eyes test pattern %s\n", enable ? "ENABLED" : "DISABLED");
+    return 0;
+}
+
+static int cmd_disp_center(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("Usage: disp_center <x_px> <y_px> [persist|temp]\n");
+        return 0;
+    }
+    int x = (int)strtol(argv[1], NULL, 10);
+    int y = (int)strtol(argv[2], NULL, 10);
+    bool persist = true;
+    if (argc >= 4) {
+        if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(argv[3], "persist") == 0) {
+            persist = true;
+        }
+    }
+    eldra_eyes_set_display_center_offset(x, y);
+    if (persist) {
+        config_store_t cfg;
+        if (config_store_load(&cfg) == ESP_OK) {
+            cfg.display_center_x_offset = x;
+            cfg.display_center_y_offset = y;
+            if (config_store_save(&cfg) == ESP_OK) {
+                printf("Display center offset persisted (x=%d y=%d)\n", x, y);
+            } else {
+                printf("Persist failed (save error)\n");
+            }
+        } else {
+            printf("Persist failed (config load error)\n");
+        }
+    } else {
+        printf("Display center offset set to x=%d y=%d (not persisted)\n", x, y);
+    }
+    return 0;
+}
+
 esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
 {
     s_ctx = ctx;
@@ -175,7 +267,7 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
 
     const esp_console_cmd_t pet_cmd = {
         .command = "emo_pet",
-        .help = "Pet Eldra.",
+        .help = "Pet Eldra. Usage: emo_pet [small|big]",
         .hint = NULL,
         .func = &cmd_pet,
     };
@@ -197,6 +289,14 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&state_cmd), TAG, "register emo_state failed");
 
+    const esp_console_cmd_t needs_cmd = {
+        .command = "emo_needs",
+        .help = "Show need bitmask (hungry/lonely/sleepy/etc.).",
+        .hint = NULL,
+        .func = &cmd_state_show,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&needs_cmd), TAG, "register emo_needs failed");
+
     const esp_console_cmd_t show_cmd = {
         .command = "emo_state_show",
         .help = "Show current emotion state/meters.",
@@ -207,11 +307,27 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
 
     const esp_console_cmd_t offset_cmd = {
         .command = "eyes_offset",
-        .help = "Set eye center offset in pixels. Usage: eyes_offset <x> <y> (positive=right/down)",
+        .help = "Set eye center offset in pixels (persists by default). Usage: eyes_offset <x> <y> [persist|temp] (positive=right/down)",
         .hint = NULL,
         .func = &cmd_eyes_offset,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&offset_cmd), TAG, "register eyes_offset failed");
+
+    const esp_console_cmd_t test_cmd = {
+        .command = "eyes_test",
+        .help = "Toggle eyes test pattern (crosshair/border) for centering. Usage: eyes_test on|off",
+        .hint = NULL,
+        .func = &cmd_eyes_test,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&test_cmd), TAG, "register eyes_test failed");
+
+    const esp_console_cmd_t disp_center_cmd = {
+        .command = "disp_center",
+        .help = "Set display center offset (persists by default). Usage: disp_center <x> <y> [persist|temp]",
+        .hint = NULL,
+        .func = &cmd_disp_center,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&disp_center_cmd), TAG, "register disp_center failed");
 
     return ESP_OK;
 }

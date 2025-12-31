@@ -39,6 +39,11 @@ void config_store_get_defaults(config_store_t *out)
     // Default display offset tuned for the round ST7701S panel from the demo build.
     out->eyes_center_x_offset = 20;
     out->eyes_center_y_offset = 0;
+    out->display_center_x_offset = 0;
+    out->display_center_y_offset = 0;
+    out->sleep_start_hour = 22;
+    out->sleep_end_hour = 8;
+    out->mood_log_interval_minutes = 20; // log meters every 20 minutes by default
 }
 
 static bool file_exists(const char *path)
@@ -168,8 +173,28 @@ esp_err_t config_store_load(config_store_t *out)
     if (cJSON_IsObject(eyes)) {
         if (!cJSON_HasObjectItem(eyes, "center_x_offset")) updated = true;
         if (!cJSON_HasObjectItem(eyes, "center_y_offset")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "display_center_x_offset")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "display_center_y_offset")) updated = true;
         json_apply_int(eyes, "center_x_offset", &out->eyes_center_x_offset);
         json_apply_int(eyes, "center_y_offset", &out->eyes_center_y_offset);
+        json_apply_int(eyes, "display_center_x_offset", &out->display_center_x_offset);
+        json_apply_int(eyes, "display_center_y_offset", &out->display_center_y_offset);
+    } else {
+        updated = true;
+    }
+    cJSON *sleep = cJSON_GetObjectItem(root, "sleep");
+    if (cJSON_IsObject(sleep)) {
+        if (!cJSON_HasObjectItem(sleep, "start_hour")) updated = true;
+        if (!cJSON_HasObjectItem(sleep, "end_hour")) updated = true;
+        json_apply_int(sleep, "start_hour", &out->sleep_start_hour);
+        json_apply_int(sleep, "end_hour", &out->sleep_end_hour);
+    } else {
+        updated = true;
+    }
+    cJSON *emotion = cJSON_GetObjectItem(root, "emotion");
+    if (cJSON_IsObject(emotion)) {
+        if (!cJSON_HasObjectItem(emotion, "mood_log_interval_minutes")) updated = true;
+        json_apply_int(emotion, "mood_log_interval_minutes", &out->mood_log_interval_minutes);
     } else {
         updated = true;
     }
@@ -213,6 +238,15 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON_AddItemToObject(root, "eyes", eyes);
     cJSON_AddNumberToObject(eyes, "center_x_offset", cfg->eyes_center_x_offset);
     cJSON_AddNumberToObject(eyes, "center_y_offset", cfg->eyes_center_y_offset);
+    cJSON_AddNumberToObject(eyes, "display_center_x_offset", cfg->display_center_x_offset);
+    cJSON_AddNumberToObject(eyes, "display_center_y_offset", cfg->display_center_y_offset);
+    cJSON *sleep = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "sleep", sleep);
+    cJSON_AddNumberToObject(sleep, "start_hour", cfg->sleep_start_hour);
+    cJSON_AddNumberToObject(sleep, "end_hour", cfg->sleep_end_hour);
+    cJSON *emotion = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "emotion", emotion);
+    cJSON_AddNumberToObject(emotion, "mood_log_interval_minutes", cfg->mood_log_interval_minutes);
 
     char *printed = cJSON_PrintBuffered(root, 512, true);
     cJSON_Delete(root);

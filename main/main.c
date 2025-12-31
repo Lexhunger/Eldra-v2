@@ -51,6 +51,66 @@ typedef struct {
     bool roam;
 } auto_wifi_cfg_t;
 static auto_wifi_cfg_t s_auto_wifi_cfg = {0};
+static const bool k_auto_calibrate_on_boot = false;
+
+// Scan the framebuffer for non-background pixels and return the bounding box.
+static bool measure_frame_bounds(const uint16_t *fb, int w, int h,
+                                 int *min_x, int *max_x, int *min_y, int *max_y)
+{
+    if (!fb || w <= 0 || h <= 0) return false;
+    uint16_t bg = fb[0];
+    int lx = w, rx = -1, ty = h, by = -1;
+    for (int y = 0; y < h; ++y) {
+        const uint16_t *row = fb + ((size_t)y * (size_t)w);
+        for (int x = 0; x < w; ++x) {
+            if (row[x] != bg) {
+                if (x < lx) lx = x;
+                if (x > rx) rx = x;
+                if (y < ty) ty = y;
+                if (y > by) by = y;
+            }
+        }
+    }
+    if (rx < 0 || by < 0) return false;
+    if (min_x) *min_x = lx;
+    if (max_x) *max_x = rx;
+    if (min_y) *min_y = ty;
+    if (max_y) *max_y = by;
+    return true;
+}
+
+// Render once and auto-correct center offsets if content is off-center. Optionally persists.
+static void auto_calibrate_eyes(eldra_eyes_context_t *eyes_ctx,
+                                uint16_t *fb, int w, int h,
+                                config_store_t *cfg, bool cfg_loaded)
+{
+    if (!eyes_ctx || !fb) return;
+    eldra_eyes_render(eyes_ctx, fb, (uint16_t)w, (uint16_t)h);
+    int minx, maxx, miny, maxy;
+    if (!measure_frame_bounds(fb, w, h, &minx, &maxx, &miny, &maxy)) {
+        EL_LOGW(TAG, "Auto-calibrate: no content detected");
+        return;
+    }
+    int cx = (minx + maxx) / 2;
+    int cy = (miny + maxy) / 2;
+    int target_x = w / 2;
+    int target_y = h / 2;
+    int dx = target_x - cx;
+    int dy = target_y - cy;
+    if (dx == 0 && dy == 0) {
+        EL_LOGI(TAG, "Auto-calibrate: already centered");
+        return;
+    }
+    int new_x = cfg ? cfg->eyes_center_x_offset + dx : dx;
+    int new_y = cfg ? cfg->eyes_center_y_offset + dy : dy;
+    eldra_eyes_set_center_offset(new_x, new_y);
+    EL_LOGI(TAG, "Auto-calibrate: applied dx=%d dy=%d -> offsets x=%d y=%d", dx, dy, new_x, new_y);
+    if (cfg && cfg_loaded) {
+        cfg->eyes_center_x_offset = new_x;
+        cfg->eyes_center_y_offset = new_y;
+        (void)config_store_save(cfg);
+    }
+}
 
 static const char *emotion_state_str(emotion_state_t st)
 {
@@ -273,6 +333,12 @@ void app_main(void) {
     } else {
         EL_LOGW(TAG, "SD init failed; skipping config load");
     }
+    if (!cfg_loaded) {
+        config_store_get_defaults(&cfg);
+    }
+    // Apply configurable sleep window and mood log interval to the emotion engine.
+    emotion_set_sleep_window((uint8_t)cfg.sleep_start_hour, (uint8_t)cfg.sleep_end_hour);
+    emotion_set_mood_log_interval_minutes((uint32_t)cfg.mood_log_interval_minutes);
 
     if (cfg_loaded) {
         if (cfg.wifi_ssid[0] == '\0') {
@@ -341,7 +407,8 @@ void app_main(void) {
         EL_LOGE(TAG, "Failed to create eyes context; holding");
         goto fail_safe;
     }
-    // Apply persisted eye center offsets if available.
+    // Apply persisted display/eye center offsets if available.
+    eldra_eyes_set_display_center_offset(cfg.display_center_x_offset, cfg.display_center_y_offset);
     eldra_eyes_set_center_offset(cfg.eyes_center_x_offset, cfg.eyes_center_y_offset);
     g_eyes_ctx = eyes_ctx;
     eldra_sensors_set_imu_callback(imu_callback);
@@ -362,6 +429,13 @@ void app_main(void) {
     esp_err_t test_blit = eldra_display_round_blit(framebuffer, fb_width, fb_height);
     EL_LOGI(TAG, "Test pattern blit result=%d", test_blit);
     vTaskDelay(pdMS_TO_TICKS(200));
+
+    if (k_auto_calibrate_on_boot) {
+        // Auto-calibrate eye centering once at boot using current offsets and persist if config is loaded.
+        auto_calibrate_eyes(eyes_ctx, framebuffer, fb_width, fb_height, cfg_loaded ? &cfg : NULL, cfg_loaded);
+    } else {
+        EL_LOGI(TAG, "Auto-calibrate on boot disabled; use disp_center/eyes_offset then persist.");
+    }
 
     uint64_t last_us = esp_timer_get_time();
     while (1) {

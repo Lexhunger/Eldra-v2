@@ -67,11 +67,11 @@ static void handle_command(emotion_context_t *emotion, const pet_command_t *cmd,
 
     switch (cmd->type) {
         case CMD_FEED:
-            emotion_on_feed(emotion, cmd->arg0, now_ms);
-            break;
-        case CMD_PET:
-            emotion_on_pet(emotion, now_ms);
-            break;
+        emotion_on_feed(emotion, cmd->arg0, now_ms);
+        break;
+    case CMD_PET:
+        emotion_on_pet(emotion, 0, now_ms);
+        break;
         case CMD_PLAY:
             emotion_on_play(emotion, now_ms);
             break;
