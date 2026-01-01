@@ -8,6 +8,7 @@ Eldra is a small eldritch-cute desktop pet built on an ESP32-S3 with a round TFT
 - Eyes: Centering tools (test pattern, `disp_center`, `eyes_offset`), newline/prompt fixes, battery console command, and SD/Wi-Fi/RTC/IMU console bridges merged from the driver demo.
 - Emotion Engine: Satiety bands (hungry/hangry/stuffed/food-coma), time-based decay, quiet-hours auto-sleep (10p–8a idle 10m), affect + needs mask for blended expressions, gated eldritch (only when fed/energized).
 - Config: `sleep.start_hour/end_hour`, `emotion.mood_log_interval_minutes` (0=off) now persisted on SD.
+- Cloud: Client pointed to `http://sn-llm-core.local:8030` by default, bearer token required (e.g., `the-old-ones`); push state/logs, poll commands. Set via `cloud_set <base_url> <token>`.
 - Console controls: `emo_feed 0|1|2` (big/small/snack), `emo_pet [small|big]`, `emo_play`, `emo_state`, `emo_state_show` / `emo_needs`, battery readout, eyes test/offset commands.
 - Sensors: IMU shake → dizzy/fear; edge trigger; battery smoothing with hysteresis; EXIO/wifi/sd bridges online.
 - Build: ESP-IDF 5.5.1, `idf55` helper to enter the env; `idf.py build/flash/monitor`.

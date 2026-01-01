@@ -43,6 +43,12 @@ typedef struct {
 - **IR:** IR codes map into the same `pet_command_t` fields so they share the queue and handlers.
 - **Future RFID:** Reader decodes tag -> command (e.g., feed item, toy, ritual token).
 - **Wi-Fi:** Pet pushes logs/state to a home server and polls for queued commands to enqueue locally.
+  - Cloud API (LAN, bearer auth): default `http://sn-llm-core.local:8030`
+    - `GET /api/health` (bring-up check)
+    - `GET /api/command/next` (poll ~40s when awake)
+    - `POST /api/command/ack` (ack command)
+    - `POST /api/state` (push every ~60–120s when awake)
+    - `POST /api/logs/upload/json` (flush buffered logs)
 
 ## SD and Remote Logging
 All modules call `log_event(level, tag, msg)` (or `EL_LOG{D/I/W/E}` macros) rather than raw logging macros. It keeps an in-RAM ring (last 100 entries) for quick console/HTTP retrieval via `LOGS` and writes append-only lines to `/sdcard/eldra_YYYYMMDD.log` with fixed EST timestamps (one entry per line) when the SD is mounted, with daily rotation. SD logging can be toggled/rotated via `LOGSD`. Later it will:

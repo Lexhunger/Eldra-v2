@@ -22,6 +22,11 @@
 #define ELDRA_CLOUD_RESP_BUFFER_SIZE         2048
 
 #define ELDRA_CLOUD_LOG_BUFFER_SIZE 64
+#define ELDRA_CLOUD_HEALTH_URL      "/api/health"
+#define ELDRA_CLOUD_CMD_NEXT_URL    "/api/command/next"
+#define ELDRA_CLOUD_CMD_ACK_URL     "/api/command/ack"
+#define ELDRA_CLOUD_STATE_URL       "/api/state"
+#define ELDRA_CLOUD_LOGS_URL        "/api/logs/upload/json"
 
 typedef struct {
     char ts[32];
@@ -71,6 +76,8 @@ static bool push_state_snapshot(void);
 static bool flush_logs(void);
 static void log_enqueue(const char *level, const char *tag, const char *msg);
 static void eldra_cloud_task(void *arg);
+static bool should_run_now(void);
+static bool check_health(void);
 
 static bool str_ieq(const char *a, const char *b)
 {
@@ -263,7 +270,7 @@ static bool fetch_and_dispatch_command(void)
     }
 
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/command/next", s_base_url);
+    snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_CMD_NEXT_URL);
 
     char resp[ELDRA_CLOUD_RESP_BUFFER_SIZE];
     if (!http_get_json(url, resp, sizeof(resp))) {
@@ -349,7 +356,7 @@ static bool send_pending_ack(void)
     }
 
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/command/ack", s_base_url);
+    snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_CMD_ACK_URL);
 
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
@@ -428,7 +435,7 @@ static bool push_state_snapshot(void)
     }
 
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/state", s_base_url);
+    snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_STATE_URL);
 
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
@@ -488,7 +495,7 @@ static bool flush_logs(void)
     }
 
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/logs/upload/json", s_base_url);
+    snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_LOGS_URL);
 
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
@@ -502,6 +509,38 @@ static bool flush_logs(void)
         xSemaphoreGive(s_mutex);
     }
 
+    return ok;
+}
+
+static bool should_run_now(void)
+{
+    if (s_base_url[0] == '\0' || s_auth_token[0] == '\0') {
+        return false;
+    }
+    bool asleep = false;
+    bool low_power = false;
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        asleep = s_state_valid && s_state_cache.flag_asleep;
+        low_power = s_state_valid && s_state_cache.flag_low_power;
+        xSemaphoreGive(s_mutex);
+    }
+    return !(asleep || low_power);
+}
+
+static bool check_health(void)
+{
+    if (s_base_url[0] == '\0') {
+        return false;
+    }
+    char url[192];
+    snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_HEALTH_URL);
+    char resp[ELDRA_CLOUD_RESP_BUFFER_SIZE];
+    bool ok = http_get_json(url, resp, sizeof(resp));
+    if (ok) {
+        ESP_LOGI(TAG, "Health OK: %s", resp[0] ? resp : "{}");
+    } else {
+        ESP_LOGW(TAG, "Health check failed");
+    }
     return ok;
 }
 
@@ -541,6 +580,10 @@ static void eldra_cloud_task(void *arg)
         log_elapsed += ELDRA_CLOUD_TASK_DELAY_MS;
 
         if (!s_online) {
+            continue;
+        }
+
+        if (!should_run_now()) {
             continue;
         }
 
@@ -598,11 +641,20 @@ void eldra_cloud_set_online(bool online)
     if (!s_initialized) {
         return;
     }
+    bool ok = online;
+    if (online) {
+        if (s_base_url[0] == '\0' || s_auth_token[0] == '\0') {
+            ESP_LOGW(TAG, "Cloud online requested but base_url/token missing");
+            ok = false;
+        } else {
+            ok = check_health();
+        }
+    }
     if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_online = online;
+        s_online = ok;
         xSemaphoreGive(s_mutex);
     }
-    ESP_LOGI(TAG, "Network %s", online ? "online" : "offline");
+    ESP_LOGI(TAG, "Network %s", ok ? "online" : "offline");
 }
 
 void eldra_cloud_register_command_handler(eldra_command_handler_t handler)
