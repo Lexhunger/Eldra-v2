@@ -657,6 +657,11 @@ void eldra_cloud_set_online(bool online)
     ESP_LOGI(TAG, "Network %s", ok ? "online" : "offline");
 }
 
+bool eldra_cloud_health_check(void)
+{
+    return check_health();
+}
+
 void eldra_cloud_register_command_handler(eldra_command_handler_t handler)
 {
     if (!s_initialized) {

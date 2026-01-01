@@ -89,6 +89,12 @@ void eldra_cloud_set_state(const eldra_state_t *state);
  */
 void eldra_cloud_log(const char *level, const char *tag, const char *msg);
 
+/**
+ * @brief Perform a health check (GET /api/health) using current base_url/token.
+ * @return true on success/200, false otherwise.
+ */
+bool eldra_cloud_health_check(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,8 @@
 #include "freertos/task.h"
 #include "sd_driver.h"
 #include "config_store.h"
+#include "eldra_cloud.h"
+#include "esp_http_client.h"
 #include "wifi_driver.h"
 
 static const char *TAG = "console_sd";
@@ -241,6 +243,42 @@ static int cmd_cloud_set(int argc, char **argv)
     return 0;
 }
 
+static int cmd_cloud_health(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    bool ok = eldra_cloud_health_check();
+    printf("Cloud health: %s\n", ok ? "OK" : "FAILED");
+    return 0;
+}
+
+static int cmd_ping_url(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: ping <url>\n");
+        return 0;
+    }
+    const char *url = argv[1];
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 3000,
+        .method = HTTP_METHOD_GET,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        printf("Ping init failed\n");
+        return 0;
+    }
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    if (err == ESP_OK && status > 0) {
+        printf("Ping %s -> HTTP %d\n", url, status);
+    } else {
+        printf("Ping %s failed: %s (status=%d)\n", url, esp_err_to_name(err), status);
+    }
+    return 0;
+}
+
 static int cmd_config_set_eyes(int argc, char **argv)
 {
     if (argc < 3) {
@@ -337,6 +375,22 @@ esp_err_t ConsoleSD_Init(void)
         .func = &cmd_cloud_set,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_set_cmd), TAG, "register cloud_set failed");
+
+    const esp_console_cmd_t cloud_health_cmd = {
+        .command = "cloud_health",
+        .help = "GET /api/health with current cloud config.",
+        .hint = NULL,
+        .func = &cmd_cloud_health,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_health_cmd), TAG, "register cloud_health failed");
+
+    const esp_console_cmd_t ping_cmd = {
+        .command = "ping",
+        .help = "HTTP GET a URL to test reachability. Usage: ping <url>",
+        .hint = NULL,
+        .func = &cmd_ping_url,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&ping_cmd), TAG, "register ping failed");
 
     const esp_console_cmd_t eyes_set_cmd = {
         .command = "config_set_eyes",
