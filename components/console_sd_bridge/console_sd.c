@@ -200,8 +200,9 @@ static int cmd_sd_format(int argc, char **argv)
 
 static int cmd_cloud_set(int argc, char **argv)
 {
-    if (argc < 3) {
-        printf("Usage: cloud_set <base_url> <token>\n");
+    if (argc < 2) {
+        printf("Usage: cloud_set <base_url> [token]\n");
+        printf("Or:    cloud_set token <token>\n");
         return 0;
     }
     config_store_t cfg;
@@ -209,13 +210,33 @@ static int cmd_cloud_set(int argc, char **argv)
         printf("Load config failed\n");
         return 0;
     }
+
+    if (strcasecmp(argv[1], "token") == 0) {
+        if (argc < 3) {
+            printf("Usage: cloud_set token <token>\n");
+            return 0;
+        }
+        strlcpy(cfg.cloud_token, argv[2], sizeof(cfg.cloud_token));
+        cfg.auto_init_cloud = true;
+        if (config_store_save(&cfg) != ESP_OK) {
+            printf("Save config failed\n");
+        } else {
+            printf("Cloud token saved (auto_init_cloud=true)\n");
+        }
+        return 0;
+    }
+
+    // Set base URL and optionally token.
     strlcpy(cfg.cloud_base_url, argv[1], sizeof(cfg.cloud_base_url));
-    strlcpy(cfg.cloud_token, argv[2], sizeof(cfg.cloud_token));
+    if (argc >= 3) {
+        strlcpy(cfg.cloud_token, argv[2], sizeof(cfg.cloud_token));
+    }
     cfg.auto_init_cloud = true;
     if (config_store_save(&cfg) != ESP_OK) {
         printf("Save config failed\n");
     } else {
-        printf("Cloud config saved (auto_init_cloud=true)\n");
+        printf("Cloud config saved (auto_init_cloud=true)%s\n",
+               (argc >= 3) ? " with new token" : " (token unchanged)");
     }
     return 0;
 }

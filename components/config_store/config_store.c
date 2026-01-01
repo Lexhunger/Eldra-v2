@@ -35,7 +35,7 @@ void config_store_get_defaults(config_store_t *out)
     out->wifi_pass[0] = '\0';
     out->logs_to_sd = true;
     strlcpy(out->cloud_base_url, "http://sn-llm-core.local:8030", sizeof(out->cloud_base_url));
-    out->cloud_token[0] = '\0'; // configurable; no default token baked in
+    strlcpy(out->cloud_token, "the-old-ones", sizeof(out->cloud_token)); // configurable; change via console
     // Default display offset tuned for the round ST7701S panel from the demo build.
     out->eyes_center_x_offset = 20;
     out->eyes_center_y_offset = 0;
