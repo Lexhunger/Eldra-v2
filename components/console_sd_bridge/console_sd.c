@@ -11,6 +11,7 @@
 #include "sd_driver.h"
 #include "config_store.h"
 #include "eldra_cloud.h"
+#include "eldra_emotion.h"
 #include "eldra_sleep.h"
 #include "eldra_glyphs.h"
 #include "esp_http_client.h"
@@ -453,6 +454,34 @@ static int cmd_glyph_offset(int argc, char **argv)
     return 0;
 }
 
+static int cmd_sleep_window(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("Usage: sleep_window <start_hour> <end_hour>\n");
+        return 0;
+    }
+    int start_h = (int)strtol(argv[1], NULL, 10);
+    int end_h = (int)strtol(argv[2], NULL, 10);
+    if (start_h < 0 || start_h > 23 || end_h < 0 || end_h > 23) {
+        printf("Hours must be 0-23\n");
+        return 0;
+    }
+    config_store_t cfg;
+    if (config_store_load(&cfg) != ESP_OK) {
+        printf("Load config failed\n");
+        return 0;
+    }
+    cfg.sleep_start_hour = start_h;
+    cfg.sleep_end_hour = end_h;
+    if (config_store_save(&cfg) != ESP_OK) {
+        printf("Save config failed\n");
+    } else {
+        printf("Sleep window saved start=%d end=%d\n", start_h, end_h);
+    }
+    emotion_set_sleep_window((uint8_t)start_h, (uint8_t)end_h);
+    return 0;
+}
+
 esp_err_t ConsoleSD_Init(void)
 {
     const esp_console_cmd_t init_cmd = {
@@ -630,6 +659,14 @@ esp_err_t ConsoleSD_Init(void)
         .func = &cmd_glyph_offset,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&glyph_offset_cmd), TAG, "register glyph_offset failed");
+
+    const esp_console_cmd_t sleep_window_cmd = {
+        .command = "sleep_window",
+        .help = "Set sleep start/end hours (0-23). Usage: sleep_window <start> <end>",
+        .hint = NULL,
+        .func = &cmd_sleep_window,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&sleep_window_cmd), TAG, "register sleep_window failed");
 
     ESP_LOGI(TAG, "SD console commands ready");
     return ESP_OK;

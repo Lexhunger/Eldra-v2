@@ -193,6 +193,7 @@ emotion_affect_t emotion_get_affect(const emotion_context_t *ctx, int8_t *valenc
  * @brief Configure quiet-hour sleep window (start>=0,end<=23).
  */
 void emotion_set_sleep_window(uint8_t start_hour, uint8_t end_hour);
+void emotion_force_sleep(emotion_context_t *ctx, bool enable, uint32_t now_ms);
 
 /**
  * @brief Configure mood log interval in minutes (0 disables periodic logs).

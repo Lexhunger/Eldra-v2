@@ -524,7 +524,7 @@ void app_main(void) {
         EL_LOGI(TAG, "Auto-calibrate on boot disabled; use disp_center/eyes_offset then persist.");
     }
 
-    eldra_sleep_init();
+    eldra_sleep_init(&g_emotion);
 
     uint64_t last_us = esp_timer_get_time();
     uint32_t last_heartbeat_ms = (uint32_t)(last_us / 1000ULL);

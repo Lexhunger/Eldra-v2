@@ -595,6 +595,15 @@ void emotion_set_sleep_window(uint8_t start_hour, uint8_t end_hour) {
     EL_LOGI(TAG, "Sleep window set start=%u end=%u", (unsigned)s_sleep_start_hour, (unsigned)s_sleep_end_hour);
 }
 
+void emotion_force_sleep(emotion_context_t *ctx, bool enable, uint32_t now_ms) {
+    if (!ctx) return;
+    ctx->sleep_forced = enable;
+    ctx->last_interaction_ms = now_ms;
+    if (enable) {
+        apply_delta(&ctx->energy, -5);
+    }
+}
+
 void emotion_set_mood_log_interval_minutes(uint32_t minutes) {
     if (minutes == 0) {
         s_mood_log_interval_ms = 0;

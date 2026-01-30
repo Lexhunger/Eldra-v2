@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         eldra_display_round
+        eldra_emotion
         esp_timer
         esp_system
         wifi_driver
