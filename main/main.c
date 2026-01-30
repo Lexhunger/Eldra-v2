@@ -566,6 +566,9 @@ void app_main(void) {
 
         eldra_sleep_tick(now_ms);
 
+        // Clear framebuffer to black each frame to rule out stale pixels affecting placement.
+        memset(framebuffer, 0, buf_size_bytes);
+
         eldra_eyes_update(eyes_ctx, dt_ms);
         eldra_eyes_render(eyes_ctx, framebuffer, (uint16_t)fb_width, (uint16_t)fb_height);
         eldra_glyphs_render(framebuffer, fb_width, fb_height, now_ms);
