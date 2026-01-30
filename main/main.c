@@ -475,6 +475,10 @@ void app_main(void) {
             eldra_cloud_register_command_handler(handle_cloud_command);
             eldra_cloud_set_online(false);
             g_cloud_ready = true;
+            // If WiFi already delivered an IP before cloud init completed, bring cloud online now.
+            if (g_has_ip) {
+                eldra_cloud_set_online(true);
+            }
         }
     } else {
         EL_LOGW(TAG, "Config not loaded; auto-init skipped");
