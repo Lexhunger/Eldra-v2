@@ -1,7 +1,9 @@
 #include "eldra_glyphs.h"
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 #include "esp_timer.h"
+#include "glyph_sleep_rgba.h"
 
 #define GLYPH_COLOR_R 40
 #define GLYPH_COLOR_G 90
@@ -20,35 +22,12 @@ static eldra_glyph_id_t s_current = GLYPH_SLEEP;
 static int s_offset_x = 0;
 static int s_offset_y = -20;
 
-static const uint8_t *fallback_get(eldra_glyph_id_t id, int *w, int *h)
+static const uint8_t *embedded_get(eldra_glyph_id_t id, int *w, int *h)
 {
     if (id != GLYPH_SLEEP) return NULL;
-    static bool init = false;
-    static uint8_t rgba[24 * 24 * 4];
-    if (!init) {
-        for (int y = 0; y < 24; ++y) {
-            for (int x = 0; x < 24; ++x) {
-                int idx = (y * 24 + x) * 4;
-                uint8_t a = 0;
-                int dx = x - 10;
-                int dy = y - 12;
-                int r2 = dx * dx + dy * dy;
-                if (r2 < 80 && r2 > 30) {
-                    a = 200;
-                }
-                rgba[idx + 0] = 255;
-                rgba[idx + 1] = 255;
-                rgba[idx + 2] = 255;
-                rgba[idx + 3] = a;
-            }
-        }
-        init = true;
-        static glyph_data_t gd = {24, 24, rgba};
-        s_glyph_sleep = gd;
-    }
-    if (w) *w = s_glyph_sleep.w;
-    if (h) *h = s_glyph_sleep.h;
-    return s_glyph_sleep.rgba;
+    if (w) *w = (int)glyph_sleep_w;
+    if (h) *h = (int)glyph_sleep_h;
+    return glyph_sleep_rgba;
 }
 
 void eldra_glyphs_init(const eldra_asset_provider_t *provider)
@@ -56,7 +35,7 @@ void eldra_glyphs_init(const eldra_asset_provider_t *provider)
     if (provider) {
         s_provider = *provider;
     } else {
-        s_provider.get_glyph_rgba = fallback_get;
+        s_provider.get_glyph_rgba = embedded_get;
     }
 
     int w = 0, h = 0;

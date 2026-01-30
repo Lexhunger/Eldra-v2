@@ -4,6 +4,8 @@ idf_component_register(
         "eldra_glyphs.c"
         "ST7701S.c"
     INCLUDE_DIRS "."
+    EMBED_FILES
+        assets/glyphs/sleep/glyph_sleep.png
     REQUIRES
         esp_lcd
         driver
