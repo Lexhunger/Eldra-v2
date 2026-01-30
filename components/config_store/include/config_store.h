@@ -13,8 +13,12 @@ typedef struct {
     char wifi_ssid[33];
     char wifi_pass[65];
     bool logs_to_sd;
+    bool cloud_logs_console;
     char cloud_base_url[128];
     char cloud_token[64];
+    int cloud_poll_interval_ms;
+    int cloud_state_interval_ms;
+    int cloud_log_interval_ms;
     int eyes_center_x_offset;
     int eyes_center_y_offset;
     int display_center_x_offset;
@@ -22,6 +26,13 @@ typedef struct {
     int sleep_start_hour;          // 0-23
     int sleep_end_hour;            // 0-23
     int mood_log_interval_minutes; // 0 = disable, otherwise minutes between emotion logs
+    int mood_happiness;            // -1 means unused
+    int mood_hunger;
+    int mood_energy;
+    int mood_social;
+    int mood_fear;
+    int mood_eldritch_charge;
+    int mood_state;
 } config_store_t;
 
 /**

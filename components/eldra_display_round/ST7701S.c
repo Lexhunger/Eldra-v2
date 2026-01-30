@@ -426,7 +426,7 @@ void ST7701S_WriteData(ST7701S_handle St7701S_handle, uint8_t data)
 
 
 // Reset line handling (EXIO or direct GPIO depending on board wiring)
-static esp_err_t ST7701S_reset(void)
+esp_err_t ST7701S_reset(void)
 {
 #if LCD_RESET_VIA_EXIO
     Set_EXIO(TCA9554_EXIO1, false);

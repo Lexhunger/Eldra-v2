@@ -45,6 +45,8 @@ static bool g_wifi_online = false;
 static bool g_cloud_ready = false;
 static uint64_t g_last_cloud_state_push_ms = 0;
 static bool sntp_started = false;
+static bool g_has_ip = false;
+static uint64_t g_last_mood_save_ms = 0;
 
 typedef struct {
     char ssid[33];
@@ -53,6 +55,17 @@ typedef struct {
 } auto_wifi_cfg_t;
 static auto_wifi_cfg_t s_auto_wifi_cfg = {0};
 static const bool k_auto_calibrate_on_boot = false;
+static const uint32_t k_heartbeat_interval_ms = 5000;
+static const uint32_t k_wdt_timeout_seconds = 8;
+static const bool k_enable_heartbeat = false;
+static const uint32_t k_mood_save_interval_ms = 300000; // 5 minutes
+
+static int clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
 
 // Scan the framebuffer for non-background pixels and return the bounding box.
 static bool measure_frame_bounds(const uint16_t *fb, int w, int h,
@@ -175,6 +188,7 @@ static void auto_wifi_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(5000));
         wifi_driver_get_status(&st, &ap);
+        EL_LOGI(TAG, "Auto WiFi attempt %d status=%d RSSI=%d", attempt, st, ap.rssi);
         if (st == WIFI_STATUS_CONNECTED) {
             sd_driver_log_async("Auto WiFi connected");
             EL_LOGI(TAG, "WiFi connected to \"%s\" RSSI=%d", ap.ssid, ap.rssi);
@@ -203,6 +217,30 @@ static void got_ip_start_sntp(void *arg, esp_event_base_t base, int32_t id, void
     printf("SNTP started for timezone EST5EDT\n");
 }
 
+static void on_ip_acquired(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id;
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
+    g_has_ip = true;
+    g_wifi_online = true;
+    EL_LOGI(TAG, "Got IP: " IPSTR ", mask " IPSTR ", gw " IPSTR,
+            IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.netmask), IP2STR(&event->ip_info.gw));
+    if (g_cloud_ready) {
+        eldra_cloud_set_online(true);
+    }
+}
+
+static void on_wifi_disconnect(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id; (void)data;
+    g_has_ip = false;
+    g_wifi_online = false;
+    EL_LOGW(TAG, "WiFi disconnected");
+    if (g_cloud_ready) {
+        eldra_cloud_set_online(false);
+    }
+}
+
 static void handle_cloud_command(const eldra_command_t *cmd)
 {
     if (!cmd) {
@@ -221,20 +259,6 @@ static void handle_cloud_command(const eldra_command_t *cmd)
     }
     bool ok = comms_enqueue_command(&pcmd);
     eldra_cloud_ack_command(cmd, ok, ok ? NULL : "queue full");
-}
-
-static void update_wifi_online_flag(void)
-{
-    wifi_driver_status_t st = WIFI_STATUS_IDLE;
-    wifi_ap_record_t ap = {0};
-    wifi_driver_get_status(&st, &ap);
-    bool online = (st == WIFI_STATUS_CONNECTED);
-    if (online != g_wifi_online) {
-        g_wifi_online = online;
-        if (g_cloud_ready) {
-            eldra_cloud_set_online(online);
-        }
-    }
 }
 
 static void push_cloud_state_if_ready(uint32_t now_ms)
@@ -262,6 +286,36 @@ static void push_cloud_state_if_ready(uint32_t now_ms)
     st.flag_low_power = false;
     st.flag_debug_mode = false;
     eldra_cloud_set_state(&st);
+}
+
+static void apply_saved_mood(const config_store_t *cfg)
+{
+    if (!cfg) return;
+    if (cfg->mood_happiness >= 0) g_emotion.happiness = (uint8_t)clamp_int(cfg->mood_happiness, 0, 100);
+    if (cfg->mood_hunger >= 0) g_emotion.hunger = (uint8_t)clamp_int(cfg->mood_hunger, 0, 130);
+    if (cfg->mood_energy >= 0) g_emotion.energy = (uint8_t)clamp_int(cfg->mood_energy, 0, 100);
+    if (cfg->mood_social >= 0) g_emotion.social = (uint8_t)clamp_int(cfg->mood_social, 0, 100);
+    if (cfg->mood_fear >= 0) g_emotion.fear = (uint8_t)clamp_int(cfg->mood_fear, 0, 100);
+    if (cfg->mood_eldritch_charge >= 0) g_emotion.eldritch_charge = (uint8_t)clamp_int(cfg->mood_eldritch_charge, 0, 100);
+    if (cfg->mood_state >= 0 && cfg->mood_state <= EMOTION_STATE_DIZZY) {
+        g_emotion.current_state = (emotion_state_t)cfg->mood_state;
+    }
+}
+
+static void save_mood_to_config(void)
+{
+    config_store_t cfg;
+    if (config_store_load(&cfg) != ESP_OK) {
+        return;
+    }
+    cfg.mood_happiness = g_emotion.happiness;
+    cfg.mood_hunger = g_emotion.hunger;
+    cfg.mood_energy = g_emotion.energy;
+    cfg.mood_social = g_emotion.social;
+    cfg.mood_fear = g_emotion.fear;
+    cfg.mood_eldritch_charge = g_emotion.eldritch_charge;
+    cfg.mood_state = (int)g_emotion.current_state;
+    (void)config_store_save(&cfg);
 }
 
 void app_main(void) {
@@ -310,6 +364,21 @@ void app_main(void) {
         EL_LOGW(TAG, "IMU console init failed");
     }
 
+    // Enable a task watchdog to catch hard hangs; feed it in the main loop below.
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = k_wdt_timeout_seconds * 1000,
+        .idle_core_mask = (1 << 0) | (1 << 1),
+        .trigger_panic = true,
+    };
+    esp_err_t wdt_err = esp_task_wdt_init(&wdt_cfg);
+    if (wdt_err != ESP_OK && wdt_err != ESP_ERR_INVALID_STATE) {
+        EL_LOGW(TAG, "WDT init failed: %s", esp_err_to_name(wdt_err));
+    }
+    esp_err_t add_err = esp_task_wdt_add(NULL);
+    if (add_err != ESP_OK && add_err != ESP_ERR_INVALID_STATE) {
+        EL_LOGW(TAG, "WDT add failed: %s", esp_err_to_name(add_err));
+    }
+
     esp_err_t e = esp_netif_init();
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
         EL_LOGW(TAG, "netif init failed: %s", esp_err_to_name(e));
@@ -318,6 +387,10 @@ void app_main(void) {
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
         EL_LOGW(TAG, "event loop init failed: %s", esp_err_to_name(e));
     }
+    (void)esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_ip_acquired, NULL);
+    (void)esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &on_wifi_disconnect, NULL);
+    // Optional: also start SNTP when IP arrives.
+    (void)esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &got_ip_start_sntp, NULL);
 
     setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
     tzset();
@@ -343,6 +416,8 @@ void app_main(void) {
     // Apply configurable sleep window and mood log interval to the emotion engine.
     emotion_set_sleep_window((uint8_t)cfg.sleep_start_hour, (uint8_t)cfg.sleep_end_hour);
     emotion_set_mood_log_interval_minutes((uint32_t)cfg.mood_log_interval_minutes);
+    apply_saved_mood(&cfg);
+    g_last_mood_save_ms = (uint64_t)start_ms;
 
     if (cfg_loaded) {
         if (cfg.wifi_ssid[0] == '\0') {
@@ -394,10 +469,16 @@ void app_main(void) {
         }
 
         if (cfg.auto_init_cloud && cfg.cloud_base_url[0] != '\0' && cfg.cloud_token[0] != '\0') {
+            eldra_cloud_set_intervals(cfg.cloud_poll_interval_ms, cfg.cloud_state_interval_ms, cfg.cloud_log_interval_ms);
             eldra_cloud_init(cfg.cloud_base_url, cfg.cloud_token);
+            eldra_cloud_set_console_logging(cfg.cloud_logs_console);
             eldra_cloud_register_command_handler(handle_cloud_command);
             eldra_cloud_set_online(false);
             g_cloud_ready = true;
+            // If WiFi already delivered an IP before cloud init completed, bring cloud online now.
+            if (g_has_ip) {
+                eldra_cloud_set_online(true);
+            }
         }
     } else {
         EL_LOGW(TAG, "Config not loaded; auto-init skipped");
@@ -442,6 +523,7 @@ void app_main(void) {
     }
 
     uint64_t last_us = esp_timer_get_time();
+    uint32_t last_heartbeat_ms = (uint32_t)(last_us / 1000ULL);
     while (1) {
         uint64_t now_us = esp_timer_get_time();
         uint32_t dt_ms = (uint32_t)((now_us - last_us) / 1000ULL);
@@ -462,8 +544,21 @@ void app_main(void) {
             }
         }
 
-        update_wifi_online_flag();
         push_cloud_state_if_ready(now_ms);
+
+        // Heartbeat every few seconds to SD/console to catch silent hangs.
+        if (k_enable_heartbeat && (now_ms - last_heartbeat_ms) >= k_heartbeat_interval_ms) {
+            last_heartbeat_ms = now_ms;
+            char hb[64];
+            snprintf(hb, sizeof(hb), "HB t=%lu wifi=%d cloud=%d", (unsigned long)now_ms, g_wifi_online, g_cloud_ready);
+            sd_driver_log_async(hb);
+            EL_LOGI(TAG, "%s", hb);
+        }
+
+        if ((now_ms - (uint32_t)g_last_mood_save_ms) >= k_mood_save_interval_ms) {
+            save_mood_to_config();
+            g_last_mood_save_ms = now_ms;
+        }
 
         eldra_eyes_update(eyes_ctx, dt_ms);
         eldra_eyes_render(eyes_ctx, framebuffer, (uint16_t)fb_width, (uint16_t)fb_height);
@@ -471,6 +566,9 @@ void app_main(void) {
         if (blit_ret != ESP_OK) {
             EL_LOGE(TAG, "Blit failed: %d", blit_ret);
         }
+
+        // Feed watchdog; if we hard hang before this point, WDT will panic and give us a backtrace.
+        esp_task_wdt_reset();
 
         vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS pacing
     }

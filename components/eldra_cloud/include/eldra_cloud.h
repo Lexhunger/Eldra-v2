@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,44 @@ void eldra_cloud_set_state(const eldra_state_t *state);
  * @param msg   Message string.
  */
 void eldra_cloud_log(const char *level, const char *tag, const char *msg);
+
+/**
+ * @brief Perform a health check (GET /api/health) using current base_url/token.
+ * @return true on success/200, false otherwise.
+ */
+bool eldra_cloud_health_check(void);
+
+/**
+ * @brief Control whether eldra_cloud logs also go to console (ESP_LOG).
+ *        SD/cloud buffering is unaffected.
+ */
+void eldra_cloud_set_console_logging(bool enabled);
+
+/**
+ * @brief Update cloud worker intervals (ms). Zero/negative leaves unchanged.
+ */
+void eldra_cloud_set_intervals(int poll_interval_ms, int state_interval_ms, int log_interval_ms);
+
+typedef struct {
+    bool online_requested;
+    bool online;
+    bool last_health_ok;
+    int64_t last_health_time_ms;
+    bool last_state_ok;
+    int64_t last_state_time_ms;
+    bool last_cmd_ok;
+    int64_t last_cmd_time_ms;
+    int health_failures;
+    int64_t health_backoff_ms;
+    int poll_interval_ms;
+    int state_interval_ms;
+    int log_interval_ms;
+} eldra_cloud_status_t;
+
+/**
+ * @brief Snapshot current cloud status.
+ */
+void eldra_cloud_get_status(eldra_cloud_status_t *out);
 
 #ifdef __cplusplus
 }
