@@ -60,7 +60,13 @@ void eldra_sleep_set_glyph_offset(int dx, int dy)
 
 void eldra_sleep_tick(uint64_t now_ms)
 {
-    if (!s_sleeping) return;
+    if (!s_sleeping) {
+        // Make sure no glyph is left visible when not in a sleep sequence.
+        if (s_glyph_inited) {
+            eldra_glyphs_hide(-1);
+        }
+        return;
+    }
     if (!s_shutdown_scheduled && s_shutdown_time_ms > 0 && now_ms >= s_shutdown_time_ms) {
         s_shutdown_scheduled = true;
         ESP_LOGW(TAG, "Sleep window reached; would stage power-down here");
