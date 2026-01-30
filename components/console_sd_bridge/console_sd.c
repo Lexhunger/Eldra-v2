@@ -418,39 +418,61 @@ static int cmd_wake_now(int argc, char **argv)
     return 0;
 }
 
+static eldra_glyph_id_t glyph_from_str(const char *s)
+{
+    if (!s) return GLYPH_SLEEP;
+    if (strcasecmp(s, "sleep") == 0) return GLYPH_SLEEP;
+    return GLYPH_SLEEP;
+}
+
 static int cmd_glyph_show(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("Usage: glyph_show <sleep>\n");
+        printf("Usage: glyph_show <name> [slot]\n");
         return 0;
     }
-    if (strcasecmp(argv[1], "sleep") == 0) {
-        eldra_glyphs_show(GLYPH_SLEEP);
-        printf("Sleep glyph shown\n");
-    } else {
-        printf("Unknown glyph '%s'\n", argv[1]);
-    }
+    int slot = (argc >= 3) ? atoi(argv[2]) : 0;
+    eldra_glyph_id_t id = glyph_from_str(argv[1]);
+    eldra_glyphs_show(id, slot);
+    printf("Glyph '%s' shown on slot %d\n", argv[1], slot);
     return 0;
 }
 
 static int cmd_glyph_hide(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    eldra_glyphs_hide();
-    printf("Glyph hidden\n");
+    int slot = (argc >= 2) ? atoi(argv[1]) : -1;
+    eldra_glyphs_hide(slot);
+    printf("Glyph hidden%s\n", slot < 0 ? " (all)" : "");
     return 0;
 }
 
 static int cmd_glyph_offset(int argc, char **argv)
 {
     if (argc < 3) {
-        printf("Usage: glyph_offset <x> <y>\n");
+        printf("Usage: glyph_offset <x> <y> [slot]\n");
         return 0;
     }
     int dx = (int)strtol(argv[1], NULL, 10);
     int dy = (int)strtol(argv[2], NULL, 10);
-    eldra_sleep_set_glyph_offset(dx, dy);
-    printf("Glyph offset set x=%d y=%d\n", dx, dy);
+    int slot = (argc >= 4) ? atoi(argv[3]) : 0;
+    eldra_glyphs_set_offset(slot, dx, dy);
+    printf("Glyph offset set x=%d y=%d slot=%d\n", dx, dy, slot);
+    return 0;
+}
+
+static int cmd_glyph_layout(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: glyph_layout <stack|ring>\n");
+        return 0;
+    }
+    if (strcasecmp(argv[1], "ring") == 0) {
+        eldra_glyphs_set_layout(GLYPH_LAYOUT_RING);
+        printf("Glyph layout set to ring\n");
+    } else {
+        eldra_glyphs_set_layout(GLYPH_LAYOUT_STACK);
+        printf("Glyph layout set to stack\n");
+    }
     return 0;
 }
 

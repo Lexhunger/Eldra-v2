@@ -29,7 +29,7 @@ void eldra_sleep_sleep_now(void)
     s_sleeping = true;
     s_shutdown_scheduled = false;
     if (s_glyph_inited) {
-        eldra_glyphs_show(GLYPH_SLEEP);
+        eldra_glyphs_show(GLYPH_SLEEP, 0);
     }
     if (s_emotion) {
         emotion_force_sleep(s_emotion, true, now_ms);
@@ -43,7 +43,7 @@ void eldra_sleep_wake_now(void)
     s_shutdown_scheduled = false;
     s_shutdown_time_ms = 0;
     if (s_glyph_inited) {
-        eldra_glyphs_hide();
+        eldra_glyphs_hide(-1);
     }
     if (s_emotion) {
         emotion_force_sleep(s_emotion, false, esp_timer_get_time() / 1000ULL);
@@ -54,7 +54,7 @@ void eldra_sleep_wake_now(void)
 void eldra_sleep_set_glyph_offset(int dx, int dy)
 {
     if (s_glyph_inited) {
-        eldra_glyphs_set_offset(dx, dy);
+        eldra_glyphs_set_offset(0, dx, dy);
     }
 }
 
