@@ -7,6 +7,8 @@
 #include "cJSON.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "wifi_driver.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -18,8 +20,12 @@
 #define ELDRA_CLOUD_STATE_PUSH_INTERVAL_MS   60000
 #define ELDRA_CLOUD_LOG_FLUSH_INTERVAL_MS    30000
 #define ELDRA_CLOUD_LOG_FLUSH_BATCH          16
-#define ELDRA_CLOUD_HTTP_TIMEOUT_MS          5000
+#define ELDRA_CLOUD_HTTP_TIMEOUT_MS          1500
 #define ELDRA_CLOUD_RESP_BUFFER_SIZE         2048
+#define ELDRA_CLOUD_HEALTH_RETRY_MS          30000
+#define ELDRA_CLOUD_HEALTH_GRACE_MS          5000
+#define ELDRA_CLOUD_HEALTH_BACKOFF_MS        120000
+#define ELDRA_CLOUD_HEALTH_FAIL_MAX          3
 
 #define ELDRA_CLOUD_LOG_BUFFER_SIZE 64
 #define ELDRA_CLOUD_HEALTH_URL      "/api/health"
@@ -63,6 +69,22 @@ static size_t s_log_count = 0;
 
 static TaskHandle_t s_task_handle = NULL;
 static SemaphoreHandle_t s_mutex = NULL;
+static int64_t s_health_elapsed = 0;
+static int64_t s_health_grace = 0;
+static int s_health_failures = 0;
+static bool s_online_requested = false;
+static bool s_health_ok = false;
+static bool s_console_logs_pref = false;
+static bool s_console_logs_enabled = false; // default off; enabled after health OK or explicit toggle
+static int s_poll_interval_ms = ELDRA_CLOUD_COMMAND_POLL_INTERVAL_MS;
+static int s_state_interval_ms = ELDRA_CLOUD_STATE_PUSH_INTERVAL_MS;
+static int s_log_interval_ms = ELDRA_CLOUD_LOG_FLUSH_INTERVAL_MS;
+static bool s_last_health_ok = false;
+static int64_t s_last_health_time_ms = 0;
+static bool s_last_state_ok = false;
+static int64_t s_last_state_time_ms = 0;
+static bool s_last_cmd_ok = false;
+static int64_t s_last_cmd_time_ms = 0;
 
 static bool str_ieq(const char *a, const char *b);
 static eldra_command_type_t map_command_type(const char *type_str);
@@ -74,6 +96,8 @@ static bool fetch_and_dispatch_command(void);
 static bool send_pending_ack(void);
 static bool push_state_snapshot(void);
 static bool flush_logs(void);
+static void mark_offline_with_backoff(void);
+static void log_ping_result(void);
 static void log_enqueue(const char *level, const char *tag, const char *msg);
 static void eldra_cloud_task(void *arg);
 static bool should_run_now(void);
@@ -178,6 +202,7 @@ static void set_common_headers(esp_http_client_handle_t client, bool json, bool 
 
 static bool http_get_json(const char *url, char *resp, size_t resp_size)
 {
+    int64_t t_start = esp_timer_get_time();
     http_buffer_t buffer = {
         .buf = resp,
         .len = 0,
@@ -207,19 +232,23 @@ static bool http_get_json(const char *url, char *resp, size_t resp_size)
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
+    int64_t elapsed_ms = (esp_timer_get_time() - t_start) / 1000;
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP GET error: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP GET error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
         return false;
     }
     if (status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "HTTP GET unexpected status: %d", status);
+        ESP_LOGW(TAG, "HTTP GET unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
         return false;
     }
+    ESP_LOGI(TAG, "HTTP GET ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
     return true;
 }
 
 static bool http_post_json(const char *url, const char *body, char *resp, size_t resp_size)
 {
+    int64_t t_start = esp_timer_get_time();
     http_buffer_t buffer = {
         .buf = resp,
         .len = 0,
@@ -252,14 +281,17 @@ static bool http_post_json(const char *url, const char *body, char *resp, size_t
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
+    int64_t elapsed_ms = (esp_timer_get_time() - t_start) / 1000;
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP POST error: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP POST error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
         return false;
     }
     if (status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "HTTP POST unexpected status: %d", status);
+        ESP_LOGW(TAG, "HTTP POST unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
         return false;
     }
+    ESP_LOGI(TAG, "HTTP POST ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
     return true;
 }
 
@@ -286,6 +318,8 @@ static bool fetch_and_dispatch_command(void)
     cJSON *cmd_obj = cJSON_GetObjectItemCaseSensitive(root, "command");
     if (!cmd_obj || cJSON_IsNull(cmd_obj)) {
         ESP_LOGD(TAG, "No command available");
+        s_last_cmd_ok = true;
+        s_last_cmd_time_ms = esp_timer_get_time() / 1000;
         cJSON_Delete(root);
         return true;
     }
@@ -298,6 +332,8 @@ static bool fetch_and_dispatch_command(void)
     if (!cJSON_IsString(id) || !cJSON_IsString(type)) {
         ESP_LOGW(TAG, "Command missing id or type");
         cJSON_Delete(root);
+        s_last_cmd_ok = false;
+        s_last_cmd_time_ms = esp_timer_get_time() / 1000;
         return false;
     }
 
@@ -309,12 +345,14 @@ static bool fetch_and_dispatch_command(void)
 
     if (s_cmd_handler) {
         s_cmd_handler(&cmd);
+        s_last_cmd_ok = true;
     } else {
         ESP_LOGW(TAG, "Command received but no handler registered");
+        s_last_cmd_ok = false;
     }
-
+    s_last_cmd_time_ms = esp_timer_get_time() / 1000;
     cJSON_Delete(root);
-    return true;
+    return s_last_cmd_ok;
 }
 
 static bool send_pending_ack(void)
@@ -439,6 +477,8 @@ static bool push_state_snapshot(void)
 
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
+    s_last_state_ok = ok;
+    s_last_state_time_ms = esp_timer_get_time() / 1000;
     return ok;
 }
 
@@ -535,13 +575,56 @@ static bool check_health(void)
     char url[192];
     snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_HEALTH_URL);
     char resp[ELDRA_CLOUD_RESP_BUFFER_SIZE];
+    ESP_LOGI(TAG, "Health check start url=%s", url);
     bool ok = http_get_json(url, resp, sizeof(resp));
-    if (ok) {
-        ESP_LOGI(TAG, "Health OK: %s", resp[0] ? resp : "{}");
-    } else {
-        ESP_LOGW(TAG, "Health check failed");
+    ESP_LOGI(TAG, "Health check %s", ok ? "OK" : "FAILED");
+    if (resp[0]) {
+        ESP_LOGD(TAG, "Health body: %s", resp);
     }
+    if (ok) {
+        s_health_ok = true;
+        s_console_logs_enabled = s_console_logs_pref;
+    }
+    s_last_health_ok = ok;
+    s_last_health_time_ms = esp_timer_get_time() / 1000;
     return ok;
+}
+
+static void mark_offline_with_backoff(void)
+{
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_online = false;
+        s_health_elapsed = 0;
+        s_health_grace = ELDRA_CLOUD_HEALTH_BACKOFF_MS;
+        if (s_health_failures < ELDRA_CLOUD_HEALTH_FAIL_MAX) {
+            s_health_failures++;
+        }
+        xSemaphoreGive(s_mutex);
+    }
+    ESP_LOGW(TAG, "Cloud marked offline (failures=%d)", s_health_failures);
+}
+
+static void log_ping_result(void)
+{
+    // Extract host from base URL for a best-effort ICMP ping.
+    const char *host = s_base_url;
+    const char *p = strstr(s_base_url, "://");
+    if (p) {
+        host = p + 3;
+    }
+    char parsed[96] = {0};
+    size_t i = 0;
+    while (host[i] && host[i] != '/' && host[i] != ':' && i < sizeof(parsed) - 1) {
+        parsed[i] = host[i];
+        i++;
+    }
+    parsed[i] = '\0';
+    if (parsed[0] == '\0') {
+        ESP_LOGW(TAG, "Ping skipped (no host parsed)");
+        return;
+    }
+    esp_err_t ping = wifi_driver_ping(parsed, 1, 1000);
+    ESP_LOGW(TAG, "Ping %s -> %s", parsed, (ping == ESP_OK) ? "OK" : esp_err_to_name(ping));
 }
 
 static void log_enqueue(const char *level, const char *tag, const char *msg)
@@ -571,6 +654,7 @@ static void eldra_cloud_task(void *arg)
     int64_t poll_elapsed = 0;
     int64_t state_elapsed = 0;
     int64_t log_elapsed = 0;
+    ESP_LOGI(TAG, "Cloud task loop started");
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(ELDRA_CLOUD_TASK_DELAY_MS));
@@ -578,30 +662,67 @@ static void eldra_cloud_task(void *arg)
         poll_elapsed += ELDRA_CLOUD_TASK_DELAY_MS;
         state_elapsed += ELDRA_CLOUD_TASK_DELAY_MS;
         log_elapsed += ELDRA_CLOUD_TASK_DELAY_MS;
+        s_health_elapsed += ELDRA_CLOUD_TASK_DELAY_MS;
 
         if (!s_online) {
+            if (!s_online_requested) {
+                ESP_LOGD(TAG, "Cloud offline and not requested; skipping");
+                continue;
+            }
+            if (s_health_grace > 0) {
+                s_health_grace -= ELDRA_CLOUD_TASK_DELAY_MS;
+                ESP_LOGD(TAG, "Cloud offline; grace %lldms remaining", (long long)s_health_grace);
+                continue;
+            }
+            if (s_health_elapsed >= ELDRA_CLOUD_HEALTH_RETRY_MS && should_run_now()) {
+                if (s_health_failures >= ELDRA_CLOUD_HEALTH_FAIL_MAX) {
+                    ESP_LOGW(TAG, "Health retries exceeded; backoff");
+                    mark_offline_with_backoff();
+                    continue;
+                }
+                ESP_LOGI(TAG, "Cloud offline; retrying health");
+                bool ok = check_health();
+                if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    s_online = true;
+                    s_health_failures = 0;
+                    xSemaphoreGive(s_mutex);
+                } else {
+                    mark_offline_with_backoff();
+                    if (s_health_failures >= ELDRA_CLOUD_HEALTH_FAIL_MAX) {
+                        log_ping_result();
+                    }
+                }
+                s_health_elapsed = 0;
+            } else {
+                ESP_LOGD(TAG, "Cloud offline; skipping cycle");
+            }
             continue;
         }
 
         if (!should_run_now()) {
+            ESP_LOGD(TAG, "Cloud skip: asleep/low_power");
             continue;
         }
 
         if (s_ack_pending) {
+            ESP_LOGD(TAG, "Cloud sending pending ACK id=%s ok=%d", s_ack_id, s_ack_ok);
             send_pending_ack();
         }
 
-        if (poll_elapsed >= ELDRA_CLOUD_COMMAND_POLL_INTERVAL_MS) {
+        if (s_poll_interval_ms > 0 && poll_elapsed >= s_poll_interval_ms) {
+            ESP_LOGD(TAG, "Cloud poll commands");
             fetch_and_dispatch_command();
             poll_elapsed = 0;
         }
 
-        if (state_elapsed >= ELDRA_CLOUD_STATE_PUSH_INTERVAL_MS) {
+        if (s_state_interval_ms > 0 && state_elapsed >= s_state_interval_ms) {
+            ESP_LOGD(TAG, "Cloud push state");
             push_state_snapshot();
             state_elapsed = 0;
         }
 
-        if (log_elapsed >= ELDRA_CLOUD_LOG_FLUSH_INTERVAL_MS) {
+        if (s_log_interval_ms > 0 && log_elapsed >= s_log_interval_ms) {
+            ESP_LOGD(TAG, "Cloud flush logs");
             flush_logs();
             log_elapsed = 0;
         }
@@ -614,6 +735,9 @@ void eldra_cloud_init(const char *base_url, const char *auth_token)
     snprintf(s_auth_token, sizeof(s_auth_token), "%s", auth_token ? auth_token : "");
 
     s_online = false;
+    s_online_requested = false;
+    s_health_ok = false;
+    s_console_logs_enabled = false;
     s_cmd_handler = NULL;
     s_state_valid = false;
     s_ack_pending = false;
@@ -626,7 +750,7 @@ void eldra_cloud_init(const char *base_url, const char *auth_token)
     }
 
     if (!s_task_handle) {
-        BaseType_t res = xTaskCreate(eldra_cloud_task, "eldra_cloud", 6144, NULL, 5, &s_task_handle);
+        BaseType_t res = xTaskCreate(eldra_cloud_task, "eldra_cloud", 6144, NULL, 3, &s_task_handle);
         if (res != pdPASS) {
             ESP_LOGE(TAG, "Failed to create cloud task");
         }
@@ -641,20 +765,18 @@ void eldra_cloud_set_online(bool online)
     if (!s_initialized) {
         return;
     }
-    bool ok = online;
-    if (online) {
-        if (s_base_url[0] == '\0' || s_auth_token[0] == '\0') {
-            ESP_LOGW(TAG, "Cloud online requested but base_url/token missing");
-            ok = false;
-        } else {
-            ok = check_health();
-        }
-    }
     if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_online = ok;
+        s_online = false;
+        s_online_requested = online;
+        s_health_elapsed = 0;
+        s_health_failures = 0;
+        s_health_grace = online ? ELDRA_CLOUD_HEALTH_GRACE_MS : 0;
+        if (!s_health_ok && online && s_console_logs_pref) {
+            s_console_logs_enabled = true; // honor preference early if requested
+        }
         xSemaphoreGive(s_mutex);
     }
-    ESP_LOGI(TAG, "Network %s", ok ? "online" : "offline");
+    ESP_LOGI(TAG, "Network %s (lazy health)", online ? "online" : "offline");
 }
 
 bool eldra_cloud_health_check(void)
@@ -728,15 +850,59 @@ void eldra_cloud_log(const char *level, const char *tag, const char *msg)
     const char *log_tag = (tag && tag[0]) ? tag : TAG;
     const char *message = msg ? msg : "";
 
-    if (str_ieq(lvl, "DEBUG")) {
-        ESP_LOGD(log_tag, "%s", message);
-    } else if (str_ieq(lvl, "WARN")) {
-        ESP_LOGW(log_tag, "%s", message);
-    } else if (str_ieq(lvl, "ERROR")) {
-        ESP_LOGE(log_tag, "%s", message);
-    } else {
-        ESP_LOGI(log_tag, "%s", message);
+    if (s_console_logs_enabled) {
+        if (str_ieq(lvl, "DEBUG")) {
+            ESP_LOGD(log_tag, "%s", message);
+        } else if (str_ieq(lvl, "WARN")) {
+            ESP_LOGW(log_tag, "%s", message);
+        } else if (str_ieq(lvl, "ERROR")) {
+            ESP_LOGE(log_tag, "%s", message);
+        } else {
+            ESP_LOGI(log_tag, "%s", message);
+        }
     }
 
     log_enqueue(lvl, log_tag, message);
+}
+
+void eldra_cloud_set_console_logging(bool enabled)
+{
+    s_console_logs_pref = enabled;
+    if (s_health_ok || enabled) {
+        s_console_logs_enabled = enabled;
+    }
+}
+
+void eldra_cloud_set_intervals(int poll_interval_ms, int state_interval_ms, int log_interval_ms)
+{
+    if (poll_interval_ms > 0) {
+        s_poll_interval_ms = poll_interval_ms;
+    }
+    if (state_interval_ms > 0) {
+        s_state_interval_ms = state_interval_ms;
+    }
+    if (log_interval_ms > 0) {
+        s_log_interval_ms = log_interval_ms;
+    }
+}
+
+void eldra_cloud_get_status(eldra_cloud_status_t *out)
+{
+    if (!out) return;
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        out->online_requested = s_online_requested;
+        out->online = s_online;
+        out->last_health_ok = s_last_health_ok;
+        out->last_health_time_ms = s_last_health_time_ms;
+        out->last_state_ok = s_last_state_ok;
+        out->last_state_time_ms = s_last_state_time_ms;
+        out->last_cmd_ok = s_last_cmd_ok;
+        out->last_cmd_time_ms = s_last_cmd_time_ms;
+        out->health_failures = s_health_failures;
+        out->health_backoff_ms = s_health_grace > 0 ? s_health_grace : ELDRA_CLOUD_HEALTH_BACKOFF_MS;
+        out->poll_interval_ms = s_poll_interval_ms;
+        out->state_interval_ms = s_state_interval_ms;
+        out->log_interval_ms = s_log_interval_ms;
+        xSemaphoreGive(s_mutex);
+    }
 }

@@ -172,11 +172,15 @@ static int cmd_config_show(int argc, char **argv)
            cfg.wifi_ssid,
            (cfg.wifi_pass[0] ? "***" : "(empty)"),
            cfg.wifi_roam ? "true" : "false");
-    printf("  logs: to_sd=%s\n", cfg.logs_to_sd ? "true" : "false");
+    printf("  logs: to_sd=%s cloud_console=%s\n",
+           cfg.logs_to_sd ? "true" : "false",
+           cfg.cloud_logs_console ? "true" : "false");
     printf("  cloud: auto=%s url=\"%s\" token=%s\n",
            cfg.auto_init_cloud ? "true" : "false",
            cfg.cloud_base_url,
            cfg.cloud_token[0] ? "***" : "(empty)");
+    printf("  cloud_intervals_ms: poll=%d state=%d log=%d\n",
+           cfg.cloud_poll_interval_ms, cfg.cloud_state_interval_ms, cfg.cloud_log_interval_ms);
     printf("  eyes: center_x_offset=%d center_y_offset=%d display_center_x_offset=%d display_center_y_offset=%d\n",
            cfg.eyes_center_x_offset, cfg.eyes_center_y_offset,
            cfg.display_center_x_offset, cfg.display_center_y_offset);
@@ -243,11 +247,21 @@ static int cmd_cloud_set(int argc, char **argv)
     return 0;
 }
 
+static void cloud_health_task(void *arg)
+{
+    (void)arg;
+    bool ok = eldra_cloud_health_check();
+    printf("Cloud health: %s\n", ok ? "OK" : "FAILED");
+    vTaskDelete(NULL);
+}
+
 static int cmd_cloud_health(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    bool ok = eldra_cloud_health_check();
-    printf("Cloud health: %s\n", ok ? "OK" : "FAILED");
+    printf("Cloud health: starting (base=%s token=%s)\n", "(see config)", "(hidden)");
+    if (xTaskCreate(cloud_health_task, "cloud_health", 4096, NULL, 4, NULL) != pdPASS) {
+        printf("Cloud health: task create failed\n");
+    }
     return 0;
 }
 
@@ -258,6 +272,7 @@ static int cmd_ping_url(int argc, char **argv)
         return 0;
     }
     const char *url = argv[1];
+    printf("Ping HTTP GET %s ...\n", url);
     esp_http_client_config_t cfg = {
         .url = url,
         .timeout_ms = 3000,
@@ -299,6 +314,88 @@ static int cmd_config_set_eyes(int argc, char **argv)
     } else {
         printf("Saved eyes offsets to config (x=%d y=%d)\n", x, y);
     }
+    return 0;
+}
+
+static int cmd_cloud_logs_console(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: cloud_logs_console <on|off>\n");
+        return 0;
+    }
+    bool enable = (strcasecmp(argv[1], "on") == 0 || strcmp(argv[1], "1") == 0 || strcasecmp(argv[1], "true") == 0);
+    config_store_t cfg;
+    if (config_store_load(&cfg) != ESP_OK) {
+        printf("Load config failed\n");
+        return 0;
+    }
+    cfg.cloud_logs_console = enable;
+    if (config_store_save(&cfg) != ESP_OK) {
+        printf("Save config failed\n");
+        return 0;
+    }
+    printf("Cloud console logging %s and saved\n", enable ? "enabled" : "disabled");
+    // Apply immediately if cloud is initialized
+    eldra_cloud_set_console_logging(enable);
+    return 0;
+}
+
+static int cmd_cloud_on(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_cloud_set_online(true);
+    printf("Cloud worker requested online\n");
+    return 0;
+}
+
+static int cmd_cloud_off(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_cloud_set_online(false);
+    printf("Cloud worker set offline\n");
+    return 0;
+}
+
+static int cmd_cloud_periods(int argc, char **argv)
+{
+    if (argc < 4) {
+        printf("Usage: cloud_periods <poll_ms> <state_ms> <log_ms>\n");
+        return 0;
+    }
+    int poll = (int)strtol(argv[1], NULL, 10);
+    int state = (int)strtol(argv[2], NULL, 10);
+    int logi = (int)strtol(argv[3], NULL, 10);
+
+    config_store_t cfg;
+    if (config_store_load(&cfg) != ESP_OK) {
+        printf("Load config failed\n");
+        return 0;
+    }
+    cfg.cloud_poll_interval_ms = poll;
+    cfg.cloud_state_interval_ms = state;
+    cfg.cloud_log_interval_ms = logi;
+    if (config_store_save(&cfg) != ESP_OK) {
+        printf("Save config failed\n");
+    } else {
+        printf("Cloud intervals saved (poll=%d state=%d log=%d)\n", poll, state, logi);
+    }
+    eldra_cloud_set_intervals(poll, state, logi);
+    return 0;
+}
+
+static int cmd_cloud_status(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_cloud_status_t st = {0};
+    eldra_cloud_get_status(&st);
+    printf("Cloud status:\n");
+    printf("  online_requested=%d online=%d failures=%d backoff_ms=%lld\n",
+           st.online_requested, st.online, st.health_failures, (long long)st.health_backoff_ms);
+    printf("  last_health: ok=%d t=%lldms\n", st.last_health_ok, (long long)st.last_health_time_ms);
+    printf("  last_state: ok=%d t=%lldms\n", st.last_state_ok, (long long)st.last_state_time_ms);
+    printf("  last_cmd:   ok=%d t=%lldms\n", st.last_cmd_ok, (long long)st.last_cmd_time_ms);
+    printf("  intervals_ms: poll=%d state=%d log=%d\n",
+           st.poll_interval_ms, st.state_interval_ms, st.log_interval_ms);
     return 0;
 }
 
@@ -399,6 +496,46 @@ esp_err_t ConsoleSD_Init(void)
         .func = &cmd_config_set_eyes,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&eyes_set_cmd), TAG, "register config_set_eyes failed");
+
+    const esp_console_cmd_t cloud_logs_cmd = {
+        .command = "cloud_logs_console",
+        .help = "Toggle eldra_cloud logs to console. Usage: cloud_logs_console <on|off>",
+        .hint = NULL,
+        .func = &cmd_cloud_logs_console,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_logs_cmd), TAG, "register cloud_logs_console failed");
+
+    const esp_console_cmd_t cloud_on_cmd = {
+        .command = "cloud_on",
+        .help = "Mark cloud worker online (will run health/poll/state/log loops)",
+        .hint = NULL,
+        .func = &cmd_cloud_on,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_on_cmd), TAG, "register cloud_on failed");
+
+    const esp_console_cmd_t cloud_off_cmd = {
+        .command = "cloud_off",
+        .help = "Mark cloud worker offline (pauses health/poll/state/log loops)",
+        .hint = NULL,
+        .func = &cmd_cloud_off,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_off_cmd), TAG, "register cloud_off failed");
+
+    const esp_console_cmd_t cloud_periods_cmd = {
+        .command = "cloud_periods",
+        .help = "Set cloud intervals (ms). Usage: cloud_periods <poll_ms> <state_ms> <log_ms>",
+        .hint = NULL,
+        .func = &cmd_cloud_periods,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_periods_cmd), TAG, "register cloud_periods failed");
+
+    const esp_console_cmd_t cloud_status_cmd = {
+        .command = "cloud_status",
+        .help = "Show cloud worker status/intervals/last success times",
+        .hint = NULL,
+        .func = &cmd_cloud_status,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_status_cmd), TAG, "register cloud_status failed");
 
     ESP_LOGI(TAG, "SD console commands ready");
     return ESP_OK;

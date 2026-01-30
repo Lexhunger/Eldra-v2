@@ -34,8 +34,12 @@ void config_store_get_defaults(config_store_t *out)
     out->wifi_ssid[0] = '\0';
     out->wifi_pass[0] = '\0';
     out->logs_to_sd = true;
+    out->cloud_logs_console = false;
     strlcpy(out->cloud_base_url, "http://sn-llm-core.local:8030", sizeof(out->cloud_base_url));
     strlcpy(out->cloud_token, "the-old-ones", sizeof(out->cloud_token)); // configurable; change via console
+    out->cloud_poll_interval_ms = 40000;
+    out->cloud_state_interval_ms = 60000;
+    out->cloud_log_interval_ms = 30000;
     // Default display offset tuned for the round ST7701S panel from the demo build.
     out->eyes_center_x_offset = 20;
     out->eyes_center_y_offset = 0;
@@ -44,6 +48,13 @@ void config_store_get_defaults(config_store_t *out)
     out->sleep_start_hour = 22;
     out->sleep_end_hour = 8;
     out->mood_log_interval_minutes = 20; // log meters every 20 minutes by default
+    out->mood_happiness = -1;
+    out->mood_hunger = -1;
+    out->mood_energy = -1;
+    out->mood_social = -1;
+    out->mood_fear = -1;
+    out->mood_eldritch_charge = -1;
+    out->mood_state = -1;
 }
 
 static bool file_exists(const char *path)
@@ -157,8 +168,14 @@ esp_err_t config_store_load(config_store_t *out)
     if (cJSON_IsObject(cloud)) {
         if (!cJSON_HasObjectItem(cloud, "base_url")) updated = true;
         if (!cJSON_HasObjectItem(cloud, "token")) updated = true;
+        if (!cJSON_HasObjectItem(cloud, "poll_interval_ms")) updated = true;
+        if (!cJSON_HasObjectItem(cloud, "state_interval_ms")) updated = true;
+        if (!cJSON_HasObjectItem(cloud, "log_interval_ms")) updated = true;
         json_apply_string(cloud, "base_url", out->cloud_base_url, sizeof(out->cloud_base_url));
         json_apply_string(cloud, "token", out->cloud_token, sizeof(out->cloud_token));
+        json_apply_int(cloud, "poll_interval_ms", &out->cloud_poll_interval_ms);
+        json_apply_int(cloud, "state_interval_ms", &out->cloud_state_interval_ms);
+        json_apply_int(cloud, "log_interval_ms", &out->cloud_log_interval_ms);
     } else {
         updated = true;
     }
@@ -166,6 +183,27 @@ esp_err_t config_store_load(config_store_t *out)
     if (cJSON_IsObject(logs)) {
         if (!cJSON_HasObjectItem(logs, "to_sd")) updated = true;
         json_apply_bool(logs, "to_sd", &out->logs_to_sd);
+        if (!cJSON_HasObjectItem(logs, "cloud_console")) updated = true;
+        json_apply_bool(logs, "cloud_console", &out->cloud_logs_console);
+    } else {
+        updated = true;
+    }
+    cJSON *mood = cJSON_GetObjectItem(root, "mood_state");
+    if (cJSON_IsObject(mood)) {
+        if (!cJSON_HasObjectItem(mood, "happiness")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "hunger")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "energy")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "social")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "fear")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "eldritch_charge")) updated = true;
+        if (!cJSON_HasObjectItem(mood, "state")) updated = true;
+        json_apply_int(mood, "happiness", &out->mood_happiness);
+        json_apply_int(mood, "hunger", &out->mood_hunger);
+        json_apply_int(mood, "energy", &out->mood_energy);
+        json_apply_int(mood, "social", &out->mood_social);
+        json_apply_int(mood, "fear", &out->mood_fear);
+        json_apply_int(mood, "eldritch_charge", &out->mood_eldritch_charge);
+        json_apply_int(mood, "state", &out->mood_state);
     } else {
         updated = true;
     }
@@ -229,10 +267,14 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON_AddItemToObject(root, "cloud", cloud);
     cJSON_AddStringToObject(cloud, "base_url", cfg->cloud_base_url);
     cJSON_AddStringToObject(cloud, "token", cfg->cloud_token);
+    cJSON_AddNumberToObject(cloud, "poll_interval_ms", cfg->cloud_poll_interval_ms);
+    cJSON_AddNumberToObject(cloud, "state_interval_ms", cfg->cloud_state_interval_ms);
+    cJSON_AddNumberToObject(cloud, "log_interval_ms", cfg->cloud_log_interval_ms);
 
     cJSON *logs = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "logs", logs);
     cJSON_AddBoolToObject(logs, "to_sd", cfg->logs_to_sd);
+    cJSON_AddBoolToObject(logs, "cloud_console", cfg->cloud_logs_console);
 
     cJSON *eyes = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "eyes", eyes);
@@ -247,6 +289,16 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON *emotion = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "emotion", emotion);
     cJSON_AddNumberToObject(emotion, "mood_log_interval_minutes", cfg->mood_log_interval_minutes);
+
+    cJSON *mood = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "mood_state", mood);
+    cJSON_AddNumberToObject(mood, "happiness", cfg->mood_happiness);
+    cJSON_AddNumberToObject(mood, "hunger", cfg->mood_hunger);
+    cJSON_AddNumberToObject(mood, "energy", cfg->mood_energy);
+    cJSON_AddNumberToObject(mood, "social", cfg->mood_social);
+    cJSON_AddNumberToObject(mood, "fear", cfg->mood_fear);
+    cJSON_AddNumberToObject(mood, "eldritch_charge", cfg->mood_eldritch_charge);
+    cJSON_AddNumberToObject(mood, "state", cfg->mood_state);
 
     char *printed = cJSON_PrintBuffered(root, 512, true);
     cJSON_Delete(root);
