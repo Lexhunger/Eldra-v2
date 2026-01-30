@@ -11,6 +11,8 @@
 #include "sd_driver.h"
 #include "config_store.h"
 #include "eldra_cloud.h"
+#include "eldra_sleep.h"
+#include "eldra_glyphs.h"
 #include "esp_http_client.h"
 #include "wifi_driver.h"
 
@@ -399,6 +401,58 @@ static int cmd_cloud_status(int argc, char **argv)
     return 0;
 }
 
+static int cmd_sleep_now(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_sleep_sleep_now();
+    printf("Sleep requested\n");
+    return 0;
+}
+
+static int cmd_wake_now(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_sleep_wake_now();
+    printf("Wake requested\n");
+    return 0;
+}
+
+static int cmd_glyph_show(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: glyph_show <sleep>\n");
+        return 0;
+    }
+    if (strcasecmp(argv[1], "sleep") == 0) {
+        eldra_glyphs_show(GLYPH_SLEEP);
+        printf("Sleep glyph shown\n");
+    } else {
+        printf("Unknown glyph '%s'\n", argv[1]);
+    }
+    return 0;
+}
+
+static int cmd_glyph_hide(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    eldra_glyphs_hide();
+    printf("Glyph hidden\n");
+    return 0;
+}
+
+static int cmd_glyph_offset(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("Usage: glyph_offset <x> <y>\n");
+        return 0;
+    }
+    int dx = (int)strtol(argv[1], NULL, 10);
+    int dy = (int)strtol(argv[2], NULL, 10);
+    eldra_sleep_set_glyph_offset(dx, dy);
+    printf("Glyph offset set x=%d y=%d\n", dx, dy);
+    return 0;
+}
+
 esp_err_t ConsoleSD_Init(void)
 {
     const esp_console_cmd_t init_cmd = {
@@ -536,6 +590,46 @@ esp_err_t ConsoleSD_Init(void)
         .func = &cmd_cloud_status,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cloud_status_cmd), TAG, "register cloud_status failed");
+
+    const esp_console_cmd_t sleep_cmd = {
+        .command = "sleep_now",
+        .help = "Trigger sleep sequence",
+        .hint = NULL,
+        .func = &cmd_sleep_now,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&sleep_cmd), TAG, "register sleep_now failed");
+
+    const esp_console_cmd_t wake_cmd = {
+        .command = "wake_now",
+        .help = "Cancel sleep and wake",
+        .hint = NULL,
+        .func = &cmd_wake_now,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&wake_cmd), TAG, "register wake_now failed");
+
+    const esp_console_cmd_t glyph_show_cmd = {
+        .command = "glyph_show",
+        .help = "Show a glyph (sleep)",
+        .hint = NULL,
+        .func = &cmd_glyph_show,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&glyph_show_cmd), TAG, "register glyph_show failed");
+
+    const esp_console_cmd_t glyph_hide_cmd = {
+        .command = "glyph_hide",
+        .help = "Hide glyph",
+        .hint = NULL,
+        .func = &cmd_glyph_hide,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&glyph_hide_cmd), TAG, "register glyph_hide failed");
+
+    const esp_console_cmd_t glyph_offset_cmd = {
+        .command = "glyph_offset",
+        .help = "Set glyph offset. Usage: glyph_offset <x> <y>",
+        .hint = NULL,
+        .func = &cmd_glyph_offset,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&glyph_offset_cmd), TAG, "register glyph_offset failed");
 
     ESP_LOGI(TAG, "SD console commands ready");
     return ESP_OK;

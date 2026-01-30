@@ -5,12 +5,14 @@
 #include <time.h>
 
 #include "eldra_display_round.h"
+#include "eldra_glyphs.h"
 #include "eldra_logging.h"
 #include "eldra_eyes.h"
 #include "eldra_sensors.h"
 #include "eldra_emotion.h"
 #include "eldra_comms.h"
 #include "eldra_cloud.h"
+#include "eldra_sleep.h"
 
 #include "console_app.h"
 #include "console_wifi.h"
@@ -522,6 +524,8 @@ void app_main(void) {
         EL_LOGI(TAG, "Auto-calibrate on boot disabled; use disp_center/eyes_offset then persist.");
     }
 
+    eldra_sleep_init();
+
     uint64_t last_us = esp_timer_get_time();
     uint32_t last_heartbeat_ms = (uint32_t)(last_us / 1000ULL);
     while (1) {
@@ -560,8 +564,11 @@ void app_main(void) {
             g_last_mood_save_ms = now_ms;
         }
 
+        eldra_sleep_tick(now_ms);
+
         eldra_eyes_update(eyes_ctx, dt_ms);
         eldra_eyes_render(eyes_ctx, framebuffer, (uint16_t)fb_width, (uint16_t)fb_height);
+        eldra_glyphs_render(framebuffer, fb_width, fb_height, now_ms);
         esp_err_t blit_ret = eldra_display_round_blit(framebuffer, fb_width, fb_height);
         if (blit_ret != ESP_OK) {
             EL_LOGE(TAG, "Blit failed: %d", blit_ret);

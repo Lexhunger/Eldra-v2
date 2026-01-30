@@ -10,6 +10,7 @@ idf_component_register(
         eldra_logging
         eldra_sd
         eldra_cloud
+        eldra_sleep
         wifi_driver
         sd_driver
         config_store

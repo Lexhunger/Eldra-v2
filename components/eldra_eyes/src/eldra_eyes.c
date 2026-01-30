@@ -169,63 +169,103 @@ static const uint8_t k_eye_frame_center[11][11] = {
 };
 
 // Look right (mid shift)
-static const uint8_t k_eye_frame_right_mid[11][11] = {
-    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 1, 1, 2, 3, 3, 3, 2, 0, 0},
-    {0, 1, 1, 2, 3, 4, 4, 4, 3, 2, 0},
-    {0, 1, 2, 3, 6, 2, 1, 2, 5, 3, 2},
-    {1, 1, 3, 4, 2, 3, 1, 7, 2, 6, 3},
-    {1, 1, 3, 4, 3, 0, 0, 1, 3, 6, 3},
-    {1, 1, 3, 6, 3, 0, 0, 1, 3, 6, 3},
-    {1, 1, 3, 4, 4, 3, 1, 3, 4, 4, 3},
-    {0, 1, 2, 3, 5, 5, 4, 6, 4, 3, 2},
-    {0, 0, 1, 1, 2, 3, 3, 3, 2, 0, 0},
-    {0, 0, 0, 1, 1, 1, 2, 1, 0, 0, 0},
+/* Look frames with shifted highlight (v2) */
+static const uint8_t k_eye_frame_right_mid_v2[11][11] = {
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,1,1,2,3,3,3,2,0,0},
+    {0,1,1,2,3,4,4,4,3,2,0},
+    {0,1,2,3,6,2,1,2,5,3,2},
+    {1,1,3,4,2,3,1,7,2,6,3},
+    {1,1,3,4,3,0,0,1,3,6,7},
+    {1,1,3,6,3,0,0,1,3,6,7},
+    {1,1,3,4,4,3,1,3,4,4,7},
+    {0,1,2,3,5,5,4,6,4,3,7},
+    {0,0,1,1,2,3,3,3,2,7,7},
+    {0,0,0,1,1,1,2,1,7,7,7},
 };
 
-// Look right (full shift)
-static const uint8_t k_eye_frame_right_full[11][11] = {
-    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 1, 1, 1, 2, 3, 3, 3, 2, 0},
-    {0, 1, 1, 1, 2, 3, 4, 4, 4, 3, 2},
-    {0, 1, 1, 2, 3, 6, 2, 1, 2, 5, 3},
-    {1, 1, 1, 3, 4, 2, 3, 1, 7, 2, 6},
-    {1, 1, 1, 3, 4, 3, 0, 1, 1, 3, 6},
-    {1, 1, 1, 3, 6, 3, 0, 1, 1, 3, 6},
-    {1, 1, 1, 3, 4, 4, 3, 1, 3, 4, 4},
-    {0, 1, 1, 2, 3, 5, 5, 4, 6, 4, 3},
-    {0, 0, 1, 1, 1, 2, 3, 3, 3, 2, 0},
-    {0, 0, 0, 1, 1, 1, 1, 2, 0, 0, 0},
+static const uint8_t k_eye_frame_right_full_v2[11][11] = {
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,1,1,1,2,3,3,3,2,0},
+    {0,1,1,1,2,3,4,4,4,3,2},
+    {0,1,1,2,3,6,2,1,2,5,3},
+    {1,1,1,3,4,2,3,1,7,2,6},
+    {1,1,1,3,4,3,0,1,1,3,6},
+    {1,1,1,3,6,3,0,1,1,3,6},
+    {1,1,1,3,4,4,3,1,3,4,4},
+    {0,1,1,2,3,5,5,4,6,4,3},
+    {0,0,1,1,1,2,3,3,3,2,7},
+    {0,0,0,1,1,1,1,2,7,7,7},
 };
 
-// Look left (mid shift)
-static const uint8_t k_eye_frame_left_mid[11][11] = {
-    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 2, 3, 3, 3, 2, 1, 1, 0, 0},
-    {0, 2, 3, 4, 4, 4, 3, 2, 1, 1, 0},
-    {2, 3, 6, 2, 1, 2, 5, 3, 2, 1, 1},
-    {3, 4, 2, 3, 1, 7, 2, 6, 3, 1, 1},
-    {3, 4, 3, 1, 1, 0, 3, 6, 3, 1, 1},
-    {3, 6, 3, 1, 1, 0, 3, 6, 3, 1, 1},
-    {3, 4, 4, 3, 1, 3, 4, 4, 3, 1, 1},
-    {2, 3, 5, 5, 4, 6, 4, 3, 2, 1, 0},
-    {0, 0, 2, 3, 3, 3, 2, 1, 1, 0, 0},
-    {0, 0, 0, 1, 2, 1, 1, 1, 0, 0, 0},
+static const uint8_t k_eye_frame_left_mid_v2[11][11] = {
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,2,3,3,3,2,1,1,0,0},
+    {0,2,3,4,4,4,3,2,1,1,0},
+    {2,3,6,2,1,2,5,3,2,1,1},
+    {3,4,2,3,1,7,2,6,3,1,1},
+    {3,4,3,1,1,0,3,6,3,1,1},
+    {3,6,3,1,1,0,3,6,3,1,1},
+    {3,4,4,3,1,3,4,4,3,1,1},
+    {2,3,5,5,4,6,4,3,2,1,0},
+    {0,2,3,3,3,2,1,1,1,0,0},
+    {0,0,1,2,1,1,1,1,0,0,0},
 };
 
-// Look left (full shift)
-static const uint8_t k_eye_frame_left_full[11][11] = {
-    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 2, 3, 3, 3, 2, 1, 1, 1, 0, 0},
-    {2, 3, 4, 4, 4, 3, 2, 1, 1, 1, 0},
-    {3, 6, 2, 1, 2, 5, 3, 2, 1, 1, 1},
-    {4, 2, 3, 1, 7, 2, 6, 3, 1, 1, 1},
-    {4, 3, 1, 1, 1, 3, 6, 3, 1, 1, 1},
-    {6, 3, 1, 1, 1, 3, 6, 3, 1, 1, 1},
-    {4, 4, 3, 1, 3, 4, 4, 3, 1, 1, 1},
-    {3, 5, 5, 4, 6, 4, 3, 2, 1, 1, 0},
-    {0, 2, 3, 3, 3, 2, 1, 1, 1, 0, 0},
-    {0, 0, 0, 2, 1, 1, 1, 1, 0, 0, 0},
+static const uint8_t k_eye_frame_left_full_v2[11][11] = {
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,2,3,3,3,2,1,1,1,0,0},
+    {2,3,4,4,4,3,2,1,1,1,0},
+    {3,6,2,1,2,5,3,2,1,1,1},
+    {4,2,3,1,7,2,6,3,1,1,1},
+    {4,3,1,1,1,3,6,3,1,1,1},
+    {6,3,1,1,1,3,6,3,1,1,1},
+    {4,4,3,1,3,4,4,3,1,1,1},
+    {3,5,5,4,6,4,3,2,1,1,0},
+    {1,2,3,3,3,2,1,1,1,0,0},
+    {0,0,1,2,1,1,1,1,0,0,0},
+};
+/* --- Blink frames (palette-indexed) --------------------------------------- */
+static const uint8_t k_eye_frame_blink_mid[11][11] = {
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,2,3,3,3,2,0,0,0},
+    {0,0,2,3,4,4,4,3,2,0,0},
+    {0,1,3,4,6,6,6,4,3,1,0},
+    {0,1,3,6,6,6,6,6,3,1,0},
+    {0,1,3,6,6,6,6,6,3,1,0},
+    {0,1,3,4,6,6,6,4,3,1,0},
+    {0,0,2,3,4,4,4,3,2,0,0},
+    {0,0,0,2,3,3,3,2,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+};
+
+static const uint8_t k_eye_frame_blink_slim[11][11] = {
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,2,3,3,3,2,0,0,0},
+    {0,0,0,2,6,6,6,2,0,0,0},
+    {0,0,0,2,6,6,6,2,0,0,0},
+    {0,0,0,2,3,3,3,2,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+};
+
+static const uint8_t k_eye_frame_closed[11][11] = {
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,0,1,1,1,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0},
 };
 
 typedef struct {
@@ -235,21 +275,21 @@ typedef struct {
 
 static const eye_frame_step_t k_look_right_sequence[] = {
     {k_eye_frame_center, 120},
-    {k_eye_frame_right_mid, 160},
-    {k_eye_frame_right_mid, 160},  // linger in mid for smoother ease-in
-    {k_eye_frame_right_full, 160},
-    {k_eye_frame_right_full, 1000}, // extra hold at the side
-    {k_eye_frame_right_mid, 160},
+    {k_eye_frame_right_mid_v2, 160},
+    {k_eye_frame_right_mid_v2, 160},  // linger in mid for smoother ease-in
+    {k_eye_frame_right_full_v2, 160},
+    {k_eye_frame_right_full_v2, 1000}, // extra hold at the side
+    {k_eye_frame_right_mid_v2, 160},
     {k_eye_frame_center, 220},
 };
 
 static const eye_frame_step_t k_look_left_sequence[] = {
     {k_eye_frame_center, 120},
-    {k_eye_frame_left_mid, 160},
-    {k_eye_frame_left_mid, 160},   // linger in mid for smoother ease-in
-    {k_eye_frame_left_full, 160},
-    {k_eye_frame_left_full, 1000}, // extra hold at the side
-    {k_eye_frame_left_mid, 160},
+    {k_eye_frame_left_mid_v2, 160},
+    {k_eye_frame_left_mid_v2, 160},   // linger in mid for smoother ease-in
+    {k_eye_frame_left_full_v2, 160},
+    {k_eye_frame_left_full_v2, 1000}, // extra hold at the side
+    {k_eye_frame_left_mid_v2, 160},
     {k_eye_frame_center, 220},
 };
 
@@ -366,33 +406,6 @@ static void blit_eye(uint16_t *framebuffer,
                     framebuffer[row_offset + x] = color;
                 }
             }
-        }
-    }
-}
-
-static void blit_eye_closed(uint16_t *framebuffer,
-                            uint16_t fb_width,
-                            uint16_t fb_height,
-                            int x0,
-                            int y0,
-                            int scale_x,
-                            int scale_y)
-{
-    uint16_t color = k_palette_rgb565[1]; // eyelid color
-    int width = 11 * scale_x;
-    int height = 11 * scale_y;
-    for (int row = 0; row < height; ++row) {
-        int y = y0 + row;
-        if (y < 0 || y >= fb_height) {
-            continue;
-        }
-        size_t row_offset = (size_t)y * fb_width;
-        for (int col = 0; col < width; ++col) {
-            int x = x0 + col;
-            if (x < 0 || x >= fb_width) {
-                continue;
-            }
-            framebuffer[row_offset + x] = color;
         }
     }
 }
@@ -919,7 +932,7 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
     int left_y0 = base_y0 + breath_offset_left_px;
     int right_y0 = base_y0 + breath_offset_right_px;
 
-    bool blink_cover = false;
+    const uint8_t (*blink_frame)[11] = eye_frame;
     if (ctx->blink.active && !reactive_dizzy) {
         uint32_t close_ms = ctx->blink.duration_ms / 2;
         uint32_t open_ms = ctx->blink.duration_ms - close_ms;
@@ -932,55 +945,26 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
             uint32_t cycle_index = ctx->blink.elapsed_ms / cycle_ms;
             if (cycle_index < ctx->blink.repeat_count) {
                 uint32_t t_in_cycle = ctx->blink.elapsed_ms % cycle_ms;
-                int min_scale = (ctx->base_scale / 4);
-                if (min_scale < 1) {
-                    min_scale = 1;
-                }
-                int scale_range = ctx->base_scale - min_scale;
+                float closure = 0.0f;
                 if (t_in_cycle < close_ms) {
-                    int span = (close_ms == 0) ? 1 : (int)close_ms;
-                    int scale_adjust = (scale_range * (int)t_in_cycle) / span;
-                    int s = ctx->base_scale - scale_adjust;
-                    if (ctx->blink.hold_ms > 0) {
-                        int extended_min = ctx->base_scale / 3;
-                        if (extended_min < 2) {
-                            extended_min = 2;
-                        }
-                        if (s < extended_min) {
-                            s = extended_min;
-                        }
-                    }
-                    scale_y_left = s;
-                    scale_y_right = s;
+                    closure = (float)t_in_cycle / (float)close_ms;
                 } else if (t_in_cycle < close_ms + ctx->blink.hold_ms) {
-                    blink_cover = (ctx->blink.hold_ms > 0);
-                    if (!blink_cover) {
-                        scale_y_left = min_scale;
-                        scale_y_right = min_scale;
-                    } else {
-                        int s = ctx->base_scale / 3;
-                        if (s < 2) {
-                            s = 2;
-                        }
-                        scale_y_left = s;
-                        scale_y_right = s;
-                    }
+                    closure = 1.0f;
                 } else if (t_in_cycle < close_ms + ctx->blink.hold_ms + open_ms) {
                     uint32_t t_open = t_in_cycle - (close_ms + ctx->blink.hold_ms);
-                    int span = (open_ms == 0) ? 1 : (int)open_ms;
-                    int scale_adjust = (scale_range * (int)t_open) / span;
-                    int s = min_scale + scale_adjust;
-                    if (ctx->blink.hold_ms > 0) {
-                        int extended_min = ctx->base_scale / 3;
-                        if (extended_min < 2) {
-                            extended_min = 2;
-                        }
-                        if (s < extended_min) {
-                            s = extended_min;
-                        }
-                    }
-                    scale_y_left = s;
-                    scale_y_right = s;
+                    closure = 1.0f - ((float)t_open / (float)open_ms);
+                } else {
+                    closure = 0.0f;
+                }
+
+                if (closure < 0.35f) {
+                    blink_frame = eye_frame;
+                } else if (closure < 0.70f) {
+                    blink_frame = k_eye_frame_blink_mid;
+                } else if (closure < 0.95f) {
+                    blink_frame = k_eye_frame_blink_slim;
+                } else {
+                    blink_frame = k_eye_frame_closed;
                 }
             }
         }
@@ -1008,18 +992,11 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
                         left_x0, left_y0, scale_x, scale_y_left, spin_phase);
         blit_eye_spiral(framebuffer, fb_width, fb_height,
                         right_x0, right_y0, scale_x, scale_y_right, spin_phase + 0.4f);
-    } else if (blink_cover) {
-        int lid_offset_left = scale_y_left / 2;
-        int lid_offset_right = scale_y_right / 2;
-        blit_eye_closed(framebuffer, fb_width, fb_height,
-                        left_x0, left_y0 + lid_offset_left, scale_x, scale_y_left);
-        blit_eye_closed(framebuffer, fb_width, fb_height,
-                        right_x0, right_y0 + lid_offset_right, scale_x, scale_y_right);
     } else {
         blit_eye(framebuffer, fb_width, fb_height,
-                 left_x0, left_y0, scale_x, scale_y_left, eye_frame);
+                 left_x0, left_y0, scale_x, scale_y_left, blink_frame);
         blit_eye(framebuffer, fb_width, fb_height,
-                 right_x0, right_y0, scale_x, scale_y_right, eye_frame);
+                 right_x0, right_y0, scale_x, scale_y_right, blink_frame);
     }
 }
 
