@@ -5,5 +5,6 @@ idf_component_register(
         backlight
         eldra_display_round
         eldra_sensors
+        eldra_logging
         freertos
 )

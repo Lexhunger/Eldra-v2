@@ -1,6 +1,8 @@
 // ST7701S driver: sets up reset/CS lines (via EXIO), sends init sequence,
 // configures RGB panel, and provides a simple "Hello" bitmap renderer (legacy).
 #include "ST7701S.h"
+#include "eldra_logging.h"
+#include "backlight.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -8,6 +10,7 @@
 #include <assert.h>
 #include "esp_heap_caps.h"
 #include "freertos/semphr.h"
+#include "driver/gpio.h"
 
 #if LCD_RESET_VIA_EXIO || LCD_CS_VIA_EXIO
 #include "TCA9554PWR.h"
@@ -428,31 +431,38 @@ void ST7701S_WriteData(ST7701S_handle St7701S_handle, uint8_t data)
 // Reset line handling (EXIO or direct GPIO depending on board wiring)
 esp_err_t ST7701S_reset(void)
 {
+    // Keep CS inactive during reset so the panel cannot latch stray command edges.
+    (void)ST7701S_CS_Dis();
+    EXIO_SetLCDControlActive(true);
 #if LCD_RESET_VIA_EXIO
     Set_EXIO(TCA9554_EXIO1, false);
 #else
     if (LCD_RESET_GPIO < 0) {
+        EXIO_SetLCDControlActive(false);
         return ESP_ERR_INVALID_ARG;
     }
     gpio_set_level(LCD_RESET_GPIO, 0);
 #endif
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(20));
 #if LCD_RESET_VIA_EXIO
     Set_EXIO(TCA9554_EXIO1, true);
 #else
     gpio_set_level(LCD_RESET_GPIO, 1);
 #endif
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(50));
+    EXIO_SetLCDControlActive(false);
     return ESP_OK;
 }
 
 // Manual chip-select handling (EXIO or direct GPIO)
 esp_err_t ST7701S_CS_EN(void)
 {
+    EXIO_SetLCDControlActive(true);
 #if LCD_CS_VIA_EXIO
     Set_EXIO(TCA9554_EXIO3,false);
 #else
     if (LCD_CS_GPIO < 0) {
+        EXIO_SetLCDControlActive(false);
         return ESP_ERR_INVALID_ARG;
     }
     gpio_set_level(LCD_CS_GPIO, 0);
@@ -471,6 +481,7 @@ esp_err_t ST7701S_CS_Dis(void)
     gpio_set_level(LCD_CS_GPIO, 1);
 #endif
     vTaskDelay(pdMS_TO_TICKS(10));
+    EXIO_SetLCDControlActive(false);
     return ESP_OK;
 }
 
@@ -496,7 +507,7 @@ static void draw_glyph(uint16_t *buffer, int buf_w, int x, int y, const glyph_t 
 static esp_err_t lcd_control_lines_init(void)
 {
 #if LCD_RESET_VIA_EXIO || LCD_CS_VIA_EXIO
-    ESP_LOGI(LCD_TAG, "Init EXIO for reset/CS");
+    EL_LOGI(LCD_TAG, "Init EXIO for reset/CS");
     esp_err_t ret = EXIO_Init();
     if (ret != ESP_OK) {
         return ret;
@@ -523,8 +534,11 @@ static esp_err_t lcd_control_lines_init(void)
 
 esp_err_t LCD_Init(void)
 {
+    // If already initialized, tear down the old RGB panel so we can recreate it.
     if (panel_handle) {
-        return ESP_ERR_INVALID_STATE;
+        esp_lcd_panel_disp_on_off(panel_handle, false);
+        esp_lcd_panel_del(panel_handle);
+        panel_handle = NULL;
     }
 
     esp_err_t ret = lcd_control_lines_init();
@@ -535,21 +549,23 @@ esp_err_t LCD_Init(void)
     ST7701S_reset();
     ST7701S_CS_EN();
     vTaskDelay(pdMS_TO_TICKS(100));
-    s_st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
     if (!s_st7701s) {
-        return ESP_ERR_NO_MEM;
+        s_st7701s = ST7701S_newObject(LCD_MOSI, LCD_SCLK, LCD_CS, SPI2_HOST, SPI_METHOD);
+        if (!s_st7701s) {
+            return ESP_ERR_NO_MEM;
+        }
     }
     
     ST7701S_screen_init(s_st7701s, 1);
 #if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
-    ESP_LOGI(LCD_TAG, "Create semaphores");
+    EL_LOGI(LCD_TAG, "Create semaphores");
     sem_vsync_end = xSemaphoreCreateBinary();
     assert(sem_vsync_end);
     sem_gui_ready = xSemaphoreCreateBinary();
     assert(sem_gui_ready);
 #endif
 
-    ESP_LOGI(LCD_TAG, "Install RGB LCD panel driver");
+    EL_LOGI(LCD_TAG, "Install RGB LCD panel driver");
     esp_lcd_rgb_panel_config_t panel_config = {
         .data_width = 16, // RGB565 in parallel mode, thus 16bit in width
         .psram_trans_align = 64,
@@ -600,9 +616,24 @@ esp_err_t LCD_Init(void)
         return ret;
     }
 
-    ESP_LOGI(LCD_TAG, "Initialize RGB LCD panel");
+    EL_LOGI(LCD_TAG, "Initialize RGB LCD panel");
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    // Force deterministic panel coordinate/orientation state every bring-up.
+    esp_err_t norm_ret = ST7701S_apply_runtime_panel_defaults();
+    if (norm_ret != ESP_OK && norm_ret != ESP_ERR_NOT_SUPPORTED) {
+        return norm_ret;
+    }
+    esp_err_t on_ret = esp_lcd_panel_disp_on_off(panel_handle, true);
+    if (on_ret != ESP_OK && on_ret != ESP_ERR_NOT_SUPPORTED) {
+        return on_ret;
+    }
+    /* Some drivers return NOT_SUPPORTED; make sure DISP_EN pin is asserted anyway when valid */
+    if (EXAMPLE_PIN_NUM_DISP_EN >= 0) {
+        gpio_reset_pin(EXAMPLE_PIN_NUM_DISP_EN);
+        gpio_set_direction(EXAMPLE_PIN_NUM_DISP_EN, GPIO_MODE_OUTPUT);
+        gpio_set_level(EXAMPLE_PIN_NUM_DISP_EN, 1);
+    }
     ST7701S_CS_Dis();
     Backlight_Init();
     return ESP_OK;
@@ -618,7 +649,7 @@ void LCD_Clear(uint16_t color)
     size_t buffer_pixels = EXAMPLE_LCD_H_RES * chunk_lines;
     uint16_t *line_buffer = heap_caps_malloc(buffer_pixels * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
     if (!line_buffer) {
-        ESP_LOGE(LCD_TAG, "Failed to allocate clear buffer");
+        EL_LOGE(LCD_TAG, "Failed to allocate clear buffer");
         return;
     }
 
@@ -656,7 +687,7 @@ void LCD_DrawHelloWorld(void)
 
     uint16_t *text_buffer = heap_caps_malloc(buffer_w * buffer_h * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
     if (!text_buffer) {
-        ESP_LOGE(LCD_TAG, "Failed to allocate text buffer");
+        EL_LOGE(LCD_TAG, "Failed to allocate text buffer");
         return;
     }
     for (int i = 0; i < buffer_w * buffer_h; i++) {
@@ -693,43 +724,97 @@ esp_err_t ST7701S_reinit_sequence(void)
     return ESP_OK;
 }
 
-/********************* BackLight *********************/
-static void example_ledc_init(void)
+static esp_err_t st7701s_send_cmd(uint8_t cmd)
 {
-    // Prepare and then apply the LEDC PWM timer configuration
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode       = LEDC_MODE,
-        .timer_num        = LEDC_TIMER,
-        .duty_resolution  = LEDC_DUTY_RES,
-        .freq_hz          = LEDC_FREQUENCY,  // Set output frequency at 4 kHz
-        .clk_cfg          = LEDC_AUTO_CLK
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
-
-    // Prepare and then apply the LEDC PWM channel configuration
-    ledc_channel_config_t ledc_channel = {
-        .speed_mode     = LEDC_MODE,
-        .channel        = LEDC_CHANNEL,
-        .timer_sel      = LEDC_TIMER,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .gpio_num       = LEDC_OUTPUT_IO,
-        .duty           = 0, // Set duty to 0%
-        .hpoint         = 0
-    };
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
+    if (!s_st7701s) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = ST7701S_CS_EN();
+    if (err != ESP_OK) {
+        return err;
+    }
+    ST7701S_WriteCommand(s_st7701s, cmd);
+    ST7701S_CS_Dis();
+    return ESP_OK;
 }
 
+esp_err_t ST7701S_display_off(void)
+{
+    return st7701s_send_cmd(0x28);
+}
+
+esp_err_t ST7701S_display_on(void)
+{
+    return st7701s_send_cmd(0x29);
+}
+
+esp_err_t ST7701S_sleep_in(void)
+{
+    return st7701s_send_cmd(0x10);
+}
+
+esp_err_t ST7701S_sleep_out(void)
+{
+    return st7701s_send_cmd(0x11);
+}
+
+esp_err_t ST7701S_apply_runtime_panel_defaults(void)
+{
+    if (!panel_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t ret = ESP_OK;
+    esp_err_t err = esp_lcd_panel_set_gap(panel_handle, 0, 0);
+    if (err != ESP_OK) {
+        ret = err;
+    }
+
+    err = esp_lcd_panel_swap_xy(panel_handle, false);
+    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED && ret == ESP_OK) {
+        ret = err;
+    }
+
+    err = esp_lcd_panel_mirror(panel_handle, false, false);
+    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED && ret == ESP_OK) {
+        ret = err;
+    }
+
+    // Keep runtime normalization limited to esp_lcd transforms. Writing raw
+    // controller registers during runtime sync can perturb scan origin on some
+    // boards and cause visible horizontal drift.
+
+    return ret;
+}
+
+/********************* BackLight *********************/
+static bool s_backlight_driver_ready = false;
 // Vendor default backlight level at init (will be overridden by app_main).
 uint8_t LCD_Backlight = 70;
 void Backlight_Init(void)
 {
-    example_ledc_init();
-    Set_Backlight(LCD_Backlight);
+    if (EXAMPLE_PIN_NUM_BK_LIGHT >= 0) {
+        if (!s_backlight_driver_ready) {
+            backlight_init_off();
+            backlight_setup_pwm();
+            s_backlight_driver_ready = true;
+        }
+        backlight_set_brightness_percent(LCD_Backlight);
+    } else {
+        EL_LOGW(LCD_TAG, "Backlight pin disabled (EXAMPLE_PIN_NUM_BK_LIGHT < 0)");
+    }
 }
 
 void Set_Backlight(uint8_t Light)
 {
-    if(Light > Backlight_MAX) Light = Backlight_MAX;
-    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, Light*(8192/100)));    // Set duty
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));                 // Update duty to apply the new value
+    if (EXAMPLE_PIN_NUM_BK_LIGHT < 0) {
+        return;
+    }
+    if (Light > Backlight_MAX) Light = Backlight_MAX;
+    if (!s_backlight_driver_ready) {
+        Backlight_Init();
+    } else {
+        backlight_set_brightness_percent(Light);
+    }
 }
+

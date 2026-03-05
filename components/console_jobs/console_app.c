@@ -83,6 +83,7 @@ esp_err_t Console_Init(void)
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&batt_cmd), TAG, "register battery failed");
 
     ESP_RETURN_ON_ERROR(esp_console_start_repl(repl), TAG, "start repl failed");
-    ESP_LOGI(TAG, "Console ready. Type 'help' for commands.");
+    EL_LOGI(TAG, "Console ready. Type 'help' for commands.");
     return ESP_OK;
 }
+

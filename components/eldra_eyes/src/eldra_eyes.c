@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "eldra_logging.h"
@@ -26,6 +28,15 @@ static int s_center_x_offset = ELDRA_EYES_CENTER_X_OFFSET;
 static int s_center_y_offset = ELDRA_EYES_CENTER_Y_OFFSET;
 static int s_display_center_x_offset = 0;
 static int s_display_center_y_offset = 0;
+static int s_last_effective_eye_x_offset = 0;
+static int s_last_effective_eye_y_offset = 0;
+static int s_shadow_center_x_offset = ELDRA_EYES_CENTER_X_OFFSET;
+static int s_shadow_center_y_offset = ELDRA_EYES_CENTER_Y_OFFSET;
+static int s_shadow_display_center_x_offset = 0;
+static int s_shadow_display_center_y_offset = 0;
+static portMUX_TYPE s_offset_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t s_sleep_lid_depth = 2;
+static uint8_t s_angry_lid_depth = 2;
 
 static const int k_breath_period_ms = 1500;
 static const int k_breath_scale_amp = 1; // reduced amplitude for subtler motion
@@ -34,17 +45,110 @@ static const float k_breath_phase_offset_left = 0.35f; // ~20 degrees
 static const float k_two_pi = 6.2831853f;
 static const float k_rad_to_deg = 57.2957795f;
 static const float k_imu_ema_alpha = 0.18f;
-// Lowered threshold/time so shakes reliably trigger dizzy on the new driver.
-static const float k_imu_gyro_dizzy_thresh_dps = 90.0f;
-static const uint32_t k_imu_gyro_dizzy_time_ms = 200;
-static const uint32_t k_dizzy_cooldown_ms = 4000;
+// Keep dizzy easy to trigger with real shake motion while avoiding tiny jitter.
+static const float k_imu_gyro_dizzy_thresh_dps = 45.0f;
+static const float k_imu_gyro_dizzy_spike_dps = 95.0f;
+static const float k_imu_gyro_decay_floor_dps = 22.0f;
+static const float k_imu_gdev_dizzy_thresh = 0.22f;
+static const uint32_t k_imu_gyro_dizzy_time_ms = 110;
+static const uint32_t k_dizzy_cooldown_ms = 3000;
 static const uint32_t k_imu_log_interval_ms = 1500;
+static const uint32_t k_idle_force_blink_ms = 4500;
+static const uint32_t k_idle_force_look_ms = 9000;
 static bool s_test_pattern = false;
 
 static inline int clamp_int(int v, int lo, int hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static void copy_eye_frame(uint8_t dst[11][11], const uint8_t src[11][11]);
+static void build_tired_frame(const uint8_t src[11][11], uint8_t dst[11][11], uint8_t lid_depth, bool heavy);
+static void apply_hungry_tint(const uint8_t src[11][11], uint8_t dst[11][11]);
+
+static void compute_effective_offsets(uint16_t fb_width,
+                                      uint16_t fb_height,
+                                      int sprite_px_x,
+                                      int sprite_px_y_nominal,
+                                      int req_center_x,
+                                      int req_center_y,
+                                      int disp_center_x,
+                                      int disp_center_y,
+                                      int *out_x,
+                                      int *out_y)
+{
+    const int eye_offset = (sprite_px_x * 3) / 4;
+    const int base_center_x = (fb_width / 2) + disp_center_x;
+    const int min_center_x = eye_offset + (sprite_px_x / 2);
+    const int max_center_x = (int)fb_width - eye_offset - (sprite_px_x / 2);
+    int min_x_offset = min_center_x - base_center_x;
+    int max_x_offset = max_center_x - base_center_x;
+    if (min_x_offset > max_x_offset) {
+        int mid = (min_x_offset + max_x_offset) / 2;
+        min_x_offset = mid;
+        max_x_offset = mid;
+    }
+
+    // Include breathing motion (+/-3px) and max per-eye vertical scale swing (~11px).
+    const int vertical_margin = k_breath_offset_amp_px + 12;
+    const int base_center_y = (fb_height / 2) + disp_center_y;
+    const int min_center_y = (sprite_px_y_nominal / 2) + vertical_margin;
+    const int max_center_y = (int)fb_height - (sprite_px_y_nominal / 2) - vertical_margin;
+    int min_y_offset = min_center_y - base_center_y;
+    int max_y_offset = max_center_y - base_center_y;
+    if (min_y_offset > max_y_offset) {
+        int mid = (min_y_offset + max_y_offset) / 2;
+        min_y_offset = mid;
+        max_y_offset = mid;
+    }
+
+    if (out_x) {
+        *out_x = clamp_int(req_center_x, min_x_offset, max_x_offset);
+    }
+    if (out_y) {
+        *out_y = clamp_int(req_center_y, min_y_offset, max_y_offset);
+    }
+}
+
+static void snapshot_offsets(int *center_x, int *center_y, int *disp_x, int *disp_y)
+{
+    bool healed = false;
+    int bad_cx = 0, bad_cy = 0, bad_dx = 0, bad_dy = 0;
+    int healed_cx = 0, healed_cy = 0, healed_dx = 0, healed_dy = 0;
+
+    portENTER_CRITICAL(&s_offset_mux);
+    if (s_center_x_offset != s_shadow_center_x_offset ||
+        s_center_y_offset != s_shadow_center_y_offset ||
+        s_display_center_x_offset != s_shadow_display_center_x_offset ||
+        s_display_center_y_offset != s_shadow_display_center_y_offset) {
+        healed = true;
+        bad_cx = s_center_x_offset;
+        bad_cy = s_center_y_offset;
+        bad_dx = s_display_center_x_offset;
+        bad_dy = s_display_center_y_offset;
+        s_center_x_offset = s_shadow_center_x_offset;
+        s_center_y_offset = s_shadow_center_y_offset;
+        s_display_center_x_offset = s_shadow_display_center_x_offset;
+        s_display_center_y_offset = s_shadow_display_center_y_offset;
+    }
+    healed_cx = s_center_x_offset;
+    healed_cy = s_center_y_offset;
+    healed_dx = s_display_center_x_offset;
+    healed_dy = s_display_center_y_offset;
+    portEXIT_CRITICAL(&s_offset_mux);
+
+    if (healed) {
+        EL_LOGW(TAG,
+                "Offset state healed at runtime bad eye=(%d,%d) disp=(%d,%d) -> eye=(%d,%d) disp=(%d,%d)",
+                bad_cx, bad_cy, bad_dx, bad_dy,
+                healed_cx, healed_cy, healed_dx, healed_dy);
+    }
+
+    if (center_x) *center_x = healed_cx;
+    if (center_y) *center_y = healed_cy;
+    if (disp_x) *disp_x = healed_dx;
+    if (disp_y) *disp_y = healed_dy;
 }
 
 static void draw_square_marker(uint16_t *fb, uint16_t fb_width, uint16_t fb_height, int cx, int cy, uint16_t color)
@@ -84,6 +188,7 @@ typedef struct {
 struct eldra_eyes_context {
     eldra_eyes_mode_t mode;
     eldra_eyes_mood_t mood;
+    uint32_t modifiers;
 
     bool transform_chibi_to_eldritch_active;
     bool transform_eldritch_to_chibi_active;
@@ -113,6 +218,8 @@ struct eldra_eyes_context {
         uint32_t clip_elapsed_ms;
         uint32_t clip_duration_ms;
         uint32_t idle_gap_ms;
+        uint32_t since_blink_ms;
+        uint32_t since_look_ms;
     } idle;
 
     struct {
@@ -129,6 +236,7 @@ struct eldra_eyes_context {
     } imu;
 
     int base_scale; /* baseline scale for chibi eyes */
+    bool sleep_lid_heavy;
 };
 
 /* Idle clip table (weights drive random selection) */
@@ -174,28 +282,28 @@ static const uint8_t k_eye_frame_right_mid_v2[11][11] = {
     {0,0,0,0,1,1,1,0,0,0,0},
     {0,0,1,1,2,3,3,3,2,0,0},
     {0,1,1,2,3,4,4,4,3,2,0},
-    {0,1,2,3,6,2,1,2,5,3,2},
-    {1,1,3,4,2,3,1,7,2,6,3},
-    {1,1,3,4,3,0,0,1,3,6,7},
-    {1,1,3,6,3,0,0,1,3,6,7},
-    {1,1,3,4,4,3,1,3,4,4,7},
-    {0,1,2,3,5,5,4,6,4,3,7},
-    {0,0,1,1,2,3,3,3,2,7,7},
-    {0,0,0,1,1,1,2,1,7,7,7},
+    {1,1,2,3,5,2,1,2,6,3,2},
+    {1,1,3,6,2,3,1,3,7,4,3},
+    {1,1,3,6,3,0,1,1,3,4,3},
+    {1,1,3,6,3,0,1,1,3,6,3},
+    {1,1,3,4,4,3,1,3,4,4,3},
+    {0,1,2,3,4,6,4,5,5,3,2},
+    {0,0,1,1,1,2,3,3,3,2,0},
+    {0,0,0,1,1,1,1,2,1,0,0},
 };
 
 static const uint8_t k_eye_frame_right_full_v2[11][11] = {
     {0,0,0,0,1,1,1,0,0,0,0},
     {0,0,1,1,1,2,3,3,3,2,0},
     {0,1,1,1,2,3,4,4,4,3,2},
-    {0,1,1,2,3,6,2,1,2,5,3},
-    {1,1,1,3,4,2,3,1,7,2,6},
-    {1,1,1,3,4,3,0,1,1,3,6},
-    {1,1,1,3,6,3,0,1,1,3,6},
+    {1,1,1,2,3,5,2,1,2,6,3},
+    {1,1,1,3,6,2,3,1,7,2,4},
+    {1,1,1,3,6,3,1,1,1,3,4},
+    {1,1,1,3,6,3,1,1,1,3,6},
     {1,1,1,3,4,4,3,1,3,4,4},
-    {0,1,1,2,3,5,5,4,6,4,3},
-    {0,0,1,1,1,2,3,3,3,2,7},
-    {0,0,0,1,1,1,1,2,7,7,7},
+    {0,1,1,2,3,4,6,4,5,5,3},
+    {0,0,1,1,1,2,3,3,3,2,1},
+    {0,0,0,1,1,1,1,2,1,0,0},
 };
 
 static const uint8_t k_eye_frame_left_mid_v2[11][11] = {
@@ -203,7 +311,7 @@ static const uint8_t k_eye_frame_left_mid_v2[11][11] = {
     {0,0,2,3,3,3,2,1,1,0,0},
     {0,2,3,4,4,4,3,2,1,1,0},
     {2,3,6,2,1,2,5,3,2,1,1},
-    {3,4,2,3,1,7,2,6,3,1,1},
+    {3,4,7,3,1,3,2,6,3,1,1},
     {3,4,3,1,1,0,3,6,3,1,1},
     {3,6,3,1,1,0,3,6,3,1,1},
     {3,4,4,3,1,3,4,4,3,1,1},
@@ -217,7 +325,7 @@ static const uint8_t k_eye_frame_left_full_v2[11][11] = {
     {0,2,3,3,3,2,1,1,1,0,0},
     {2,3,4,4,4,3,2,1,1,1,0},
     {3,6,2,1,2,5,3,2,1,1,1},
-    {4,2,3,1,7,2,6,3,1,1,1},
+    {4,7,3,1,3,2,6,3,1,1,1},
     {4,3,1,1,1,3,6,3,1,1,1},
     {6,3,1,1,1,3,6,3,1,1,1},
     {4,4,3,1,3,4,4,3,1,1,1},
@@ -329,8 +437,12 @@ static const char *idle_clip_name(idle_clip_t clip)
 
 static const uint8_t (*look_sequence_frame(const struct eldra_eyes_context *ctx))[11]
 {
-    const eye_frame_step_t *seq = (ctx->look.direction >= 0) ? k_look_right_sequence : k_look_left_sequence;
-    size_t seq_len = (ctx->look.direction >= 0) ? k_look_right_sequence_len : k_look_left_sequence_len;
+    const eye_frame_step_t *seq = k_look_right_sequence;
+    size_t seq_len = k_look_right_sequence_len;
+    if (ctx->look.direction < 0) {
+        seq = k_look_left_sequence;
+        seq_len = k_look_left_sequence_len;
+    }
     if (ctx->look.active && ctx->look.frame_index < seq_len) {
         return seq[ctx->look.frame_index].frame;
     }
@@ -343,8 +455,12 @@ static void advance_look(struct eldra_eyes_context *ctx, uint32_t dt_ms)
         return;
     }
 
-    const eye_frame_step_t *seq = (ctx->look.direction >= 0) ? k_look_right_sequence : k_look_left_sequence;
-    size_t seq_len = (ctx->look.direction >= 0) ? k_look_right_sequence_len : k_look_left_sequence_len;
+    const eye_frame_step_t *seq = k_look_right_sequence;
+    size_t seq_len = k_look_right_sequence_len;
+    if (ctx->look.direction < 0) {
+        seq = k_look_left_sequence;
+        seq_len = k_look_left_sequence_len;
+    }
 
     ctx->look.elapsed_ms += dt_ms;
     ctx->look.frame_elapsed_ms += dt_ms;
@@ -549,6 +665,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
+        ctx->idle.since_blink_ms = 0;
         EL_LOGD(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_LOOK) {
         ctx->look.active = true;
@@ -556,10 +673,9 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
         ctx->look.direction = (esp_random() & 0x01) ? 1 : -1;
         ctx->look.frame_elapsed_ms = 0;
         ctx->look.frame_index = 0;
-        ctx->look.duration_ms = (ctx->look.direction >= 0)
-            ? look_sequence_total_ms(k_look_right_sequence, k_look_right_sequence_len)
-            : look_sequence_total_ms(k_look_left_sequence, k_look_left_sequence_len);
+        ctx->look.duration_ms = look_sequence_total_ms(k_look_right_sequence, k_look_right_sequence_len);
         ctx->idle.clip_duration_ms = ctx->look.duration_ms;
+        ctx->idle.since_look_ms = 0;
         EL_LOGD(TAG, "Idle start: %s dir=%s (duration=%u)", idle_clip_name(chosen),
                  (ctx->look.direction >= 0) ? "RIGHT" : "LEFT", ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_DOUBLE_BLINK) {
@@ -573,6 +689,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
+        ctx->idle.since_blink_ms = 0;
         EL_LOGD(TAG, "Idle start: %s (duration=%u)", idle_clip_name(chosen), ctx->idle.clip_duration_ms);
     } else if (chosen == IDLE_CLIP_EXTENDED_BLINK) {
         ctx->blink.active = true;
@@ -585,6 +702,7 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
                                                     ctx->blink.hold_ms,
                                                     ctx->blink.gap_ms,
                                                     ctx->blink.repeat_count);
+        ctx->idle.since_blink_ms = 0;
         EL_LOGD(TAG, "Idle start: %s (duration=%u hold=%u)", idle_clip_name(chosen),
                  ctx->idle.clip_duration_ms, ctx->blink.hold_ms);
     } else {
@@ -624,6 +742,8 @@ eldra_eyes_context_t *eldra_eyes_create(void)
     ctx->idle.clip_elapsed_ms = 0;
     ctx->idle.clip_duration_ms = 0;
     ctx->idle.idle_gap_ms = 500; // initial gap before first idle clip
+    ctx->idle.since_blink_ms = 0;
+    ctx->idle.since_look_ms = 0;
     ctx->reactive_dizzy.active = false;
     ctx->reactive_dizzy.elapsed_ms = 0;
     ctx->reactive_dizzy.duration_ms = 0;
@@ -632,6 +752,7 @@ eldra_eyes_context_t *eldra_eyes_create(void)
     ctx->imu.above_thresh_ms = 0;
     ctx->imu.cooldown_ms = 0;
     ctx->imu.log_timer_ms = 0;
+    ctx->sleep_lid_heavy = false;
     return ctx;
 }
 
@@ -645,9 +766,44 @@ void eldra_eyes_destroy(eldra_eyes_context_t *ctx)
 
 void eldra_eyes_set_center_offset(int x_offset, int y_offset)
 {
+    int disp_x = 0;
+    int disp_y = 0;
+    snapshot_offsets(NULL, NULL, &disp_x, &disp_y);
+
+    portENTER_CRITICAL(&s_offset_mux);
     s_center_x_offset = x_offset;
     s_center_y_offset = y_offset;
-    EL_LOGI(TAG, "Eyes center offset set to x=%d y=%d", s_center_x_offset, s_center_y_offset);
+    portEXIT_CRITICAL(&s_offset_mux);
+
+    int clamped_x = x_offset;
+    int clamped_y = y_offset;
+    // Clamp immediately for the native 480x480 panel so persisted offsets
+    // never store out-of-range values that can cause visual wrap artifacts.
+    compute_effective_offsets(480, 480, 11 * 14, 11 * 14,
+                              x_offset, y_offset, disp_x, disp_y,
+                              &clamped_x, &clamped_y);
+
+    portENTER_CRITICAL(&s_offset_mux);
+    s_center_x_offset = clamped_x;
+    s_center_y_offset = clamped_y;
+    s_shadow_center_x_offset = clamped_x;
+    s_shadow_center_y_offset = clamped_y;
+    portEXIT_CRITICAL(&s_offset_mux);
+
+    if (clamped_x != x_offset || clamped_y != y_offset) {
+        EL_LOGW(TAG, "Eyes center offset clamped req=(%d,%d) -> (%d,%d)",
+                x_offset, y_offset, clamped_x, clamped_y);
+    } else {
+        EL_LOGI(TAG, "Eyes center offset set to x=%d y=%d", s_center_x_offset, s_center_y_offset);
+    }
+}
+
+void eldra_eyes_get_center_offset(int *x_offset, int *y_offset)
+{
+    int cx = 0, cy = 0;
+    snapshot_offsets(&cx, &cy, NULL, NULL);
+    if (x_offset) *x_offset = cx;
+    if (y_offset) *y_offset = cy;
 }
 
 void eldra_eyes_set_test_pattern(bool enable)
@@ -658,9 +814,52 @@ void eldra_eyes_set_test_pattern(bool enable)
 
 void eldra_eyes_set_display_center_offset(int x_offset, int y_offset)
 {
+    portENTER_CRITICAL(&s_offset_mux);
     s_display_center_x_offset = x_offset;
     s_display_center_y_offset = y_offset;
-    EL_LOGI(TAG, "Display center offset set to x=%d y=%d", s_display_center_x_offset, s_display_center_y_offset);
+    s_shadow_display_center_x_offset = x_offset;
+    s_shadow_display_center_y_offset = y_offset;
+    portEXIT_CRITICAL(&s_offset_mux);
+    EL_LOGI(TAG, "Display center offset set to x=%d y=%d", x_offset, y_offset);
+}
+
+void eldra_eyes_get_display_center_offset(int *x_offset, int *y_offset)
+{
+    int dx = 0, dy = 0;
+    snapshot_offsets(NULL, NULL, &dx, &dy);
+    if (x_offset) *x_offset = dx;
+    if (y_offset) *y_offset = dy;
+}
+
+void eldra_eyes_get_effective_center_offset(int *x_offset, int *y_offset)
+{
+    const int sprite_px_x = 11 * 14;
+    const int sprite_px_y_nominal = 11 * 14;
+    int cx = 0, cy = 0, dx = 0, dy = 0;
+    snapshot_offsets(&cx, &cy, &dx, &dy);
+    compute_effective_offsets(480, 480, sprite_px_x, sprite_px_y_nominal,
+                              cx, cy, dx, dy, x_offset, y_offset);
+}
+
+void eldra_eyes_get_last_render_center_offset(int *x_offset, int *y_offset)
+{
+    if (x_offset) *x_offset = s_last_effective_eye_x_offset;
+    if (y_offset) *y_offset = s_last_effective_eye_y_offset;
+}
+
+void eldra_eyes_get_activity(const eldra_eyes_context_t *ctx, eldra_eyes_activity_t *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!ctx) {
+        return;
+    }
+    out->blink_active = ctx->blink.active;
+    out->look_active = ctx->look.active;
+    out->dizzy_active = ctx->reactive_dizzy.active;
+    out->idle_clip_active = (ctx->idle.active_clip != IDLE_CLIP_NONE);
 }
 
 void eldra_eyes_set_mode(eldra_eyes_context_t *ctx, eldra_eyes_mode_t mode)
@@ -693,6 +892,53 @@ eldra_eyes_mood_t eldra_eyes_get_mood(const eldra_eyes_context_t *ctx)
         return ELDRA_EYES_MOOD_NEUTRAL;
     }
     return ctx->mood;
+}
+
+void eldra_eyes_set_modifiers(eldra_eyes_context_t *ctx, uint32_t modifier_mask)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->modifiers = modifier_mask;
+}
+
+uint32_t eldra_eyes_get_modifiers(const eldra_eyes_context_t *ctx)
+{
+    if (!ctx) {
+        return 0;
+    }
+    return ctx->modifiers;
+}
+
+void eldra_eyes_set_sleep_lid_heavy(eldra_eyes_context_t *ctx, bool heavy)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->sleep_lid_heavy = heavy;
+}
+
+void eldra_eyes_set_lid_depths(uint8_t sleep_depth, uint8_t angry_depth)
+{
+    uint8_t clamped_sleep = (uint8_t)clamp_int((int)sleep_depth, 0, 6);
+    uint8_t clamped_angry = (uint8_t)clamp_int((int)angry_depth, 0, 6);
+    portENTER_CRITICAL(&s_offset_mux);
+    s_sleep_lid_depth = clamped_sleep;
+    s_angry_lid_depth = clamped_angry;
+    portEXIT_CRITICAL(&s_offset_mux);
+    EL_LOGI(TAG, "Lid depth set sleep=%u angry=%u", (unsigned)clamped_sleep, (unsigned)clamped_angry);
+}
+
+void eldra_eyes_get_lid_depths(uint8_t *sleep_depth, uint8_t *angry_depth)
+{
+    uint8_t sleep_v = 0;
+    uint8_t angry_v = 0;
+    portENTER_CRITICAL(&s_offset_mux);
+    sleep_v = s_sleep_lid_depth;
+    angry_v = s_angry_lid_depth;
+    portEXIT_CRITICAL(&s_offset_mux);
+    if (sleep_depth) *sleep_depth = sleep_v;
+    if (angry_depth) *angry_depth = angry_v;
 }
 
 void eldra_eyes_trigger_transform_chibi_to_eldritch(eldra_eyes_context_t *ctx)
@@ -744,6 +990,7 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
 
     float gyro_mag = sqrtf(gx_dps * gx_dps + gy_dps * gy_dps + gz_dps * gz_dps);
     float accel_mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+    float gdev = fabsf(accel_mag - 1.0f);
 
     /* EMA smoothing */
     float alpha = k_imu_ema_alpha;
@@ -758,18 +1005,38 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
         }
     }
 
-    /* Trigger dizzy if sustained rotation and not already in a reactive state */
+    /* Trigger dizzy from realistic shake patterns:
+     *  - instant spike path (large gyro, or medium gyro + accel deviation),
+     *  - accumulated motion path with decay instead of hard reset.
+     */
     if (!ctx->reactive_dizzy.active && ctx->imu.cooldown_ms == 0) {
-        if (gyro_mag > k_imu_gyro_dizzy_thresh_dps) {
+        bool instant_spike = (gyro_mag >= k_imu_gyro_dizzy_spike_dps) ||
+                             (gyro_mag >= k_imu_gyro_dizzy_thresh_dps && gdev >= k_imu_gdev_dizzy_thresh);
+        if (instant_spike) {
+            eldra_eyes_trigger_dizzy(ctx, 0);
+            ctx->imu.above_thresh_ms = 0;
+            ctx->imu.cooldown_ms = k_dizzy_cooldown_ms;
+            EL_LOGD(TAG, "IMU: Dizzy trigger spike (gyro=%.1f dps gdev=%.2f)",
+                    (double)gyro_mag, (double)gdev);
+        } else if (gyro_mag >= k_imu_gyro_dizzy_thresh_dps) {
             ctx->imu.above_thresh_ms += dt_ms;
             if (ctx->imu.above_thresh_ms >= k_imu_gyro_dizzy_time_ms) {
                 eldra_eyes_trigger_dizzy(ctx, 0);
                 ctx->imu.above_thresh_ms = 0;
                 ctx->imu.cooldown_ms = k_dizzy_cooldown_ms;
-                EL_LOGD(TAG, "IMU: Dizzy trigger (gyro=%.1f dps)", (double)gyro_mag);
+                EL_LOGD(TAG, "IMU: Dizzy trigger accumulated (gyro=%.1f dps gdev=%.2f)",
+                        (double)gyro_mag, (double)gdev);
+            }
+        } else if (gyro_mag < k_imu_gyro_decay_floor_dps) {
+            // Decay toward zero so brief dips don't cancel a near-threshold shake.
+            uint32_t decay = dt_ms * 2U;
+            if (ctx->imu.above_thresh_ms > decay) {
+                ctx->imu.above_thresh_ms -= decay;
+            } else {
+                ctx->imu.above_thresh_ms = 0;
             }
         } else {
-            ctx->imu.above_thresh_ms = 0;
+            // In the shoulder band, hold accumulator steady.
         }
     }
 
@@ -781,10 +1048,11 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
     } else {
         float roll_deg = atan2f(ay_g, az_g) * k_rad_to_deg;
         float pitch_deg = atan2f(-ax_g, sqrtf(ay_g * ay_g + az_g * az_g)) * k_rad_to_deg;
-        EL_LOGD(TAG, "IMU: gyro=%.1f dps (ema=%.1f) accel=%.2f g (ema=%.2f) roll=%.1f pitch=%.1f thresh=%0.1fms/%0.1fdps cool=%ums",
+        EL_LOGD(TAG, "IMU: gyro=%.1f dps (ema=%.1f) accel=%.2f g gdev=%.2f (ema=%.2f) roll=%.1f pitch=%.1f acc=%ums/%0.1fdps cool=%ums",
                  (double)gyro_mag,
                  (double)ctx->imu.gyro_ema_dps,
                  (double)accel_mag,
+                 (double)gdev,
                  (double)ctx->imu.accel_ema_g,
                  (double)roll_deg,
                  (double)pitch_deg,
@@ -822,7 +1090,61 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
 
     /* Idle clip manager for blink/look */
     if (ctx->idle.active_clip == IDLE_CLIP_NONE && !ctx->reactive_dizzy.active) {
-        if (ctx->idle.idle_gap_ms > dt_ms) {
+        if (ctx->idle.since_blink_ms <= (UINT32_MAX - dt_ms)) {
+            ctx->idle.since_blink_ms += dt_ms;
+        } else {
+            ctx->idle.since_blink_ms = UINT32_MAX;
+        }
+        if (ctx->idle.since_look_ms <= (UINT32_MAX - dt_ms)) {
+            ctx->idle.since_look_ms += dt_ms;
+        } else {
+            ctx->idle.since_look_ms = UINT32_MAX;
+        }
+
+        // Failsafe cadence: never let random idle selection suppress blink/look
+        // for long stretches.
+        if (ctx->idle.since_look_ms >= k_idle_force_look_ms) {
+            ctx->idle.idle_gap_ms = 0;
+            ctx->idle.last_clip = IDLE_CLIP_NONE;
+            ctx->idle.active_clip = IDLE_CLIP_NONE;
+            ctx->look.active = false;
+            idle_pick_next(ctx);
+            if (ctx->idle.active_clip != IDLE_CLIP_LOOK) {
+                // Force a look clip if random picker chose otherwise.
+                ctx->idle.active_clip = IDLE_CLIP_LOOK;
+                ctx->idle.clip_elapsed_ms = 0;
+                ctx->blink.active = false;
+                ctx->blink.elapsed_ms = 0;
+                ctx->look.active = true;
+                ctx->look.elapsed_ms = 0;
+                ctx->look.direction = (esp_random() & 0x01) ? 1 : -1;
+                ctx->look.frame_elapsed_ms = 0;
+                ctx->look.frame_index = 0;
+                ctx->look.duration_ms = look_sequence_total_ms(k_look_right_sequence, k_look_right_sequence_len);
+                ctx->idle.clip_duration_ms = ctx->look.duration_ms;
+                ctx->idle.since_look_ms = 0;
+                EL_LOGD(TAG, "Idle forced: LOOK dir=%s", (ctx->look.direction >= 0) ? "RIGHT" : "LEFT");
+            }
+        } else if (ctx->idle.since_blink_ms >= k_idle_force_blink_ms) {
+            ctx->idle.active_clip = IDLE_CLIP_BLINK;
+            ctx->idle.clip_elapsed_ms = 0;
+            ctx->look.active = false;
+            ctx->look.elapsed_ms = 0;
+            ctx->look.frame_elapsed_ms = 0;
+            ctx->look.frame_index = 0;
+            ctx->blink.active = true;
+            ctx->blink.elapsed_ms = 0;
+            ctx->blink.duration_ms = 140;
+            ctx->blink.gap_ms = 0;
+            ctx->blink.repeat_count = 1;
+            ctx->blink.hold_ms = 0;
+            ctx->idle.clip_duration_ms = blink_total_ms(ctx->blink.duration_ms,
+                                                        ctx->blink.hold_ms,
+                                                        ctx->blink.gap_ms,
+                                                        ctx->blink.repeat_count);
+            ctx->idle.since_blink_ms = 0;
+            EL_LOGD(TAG, "Idle forced: BLINK");
+        } else if (ctx->idle.idle_gap_ms > dt_ms) {
             ctx->idle.idle_gap_ms -= dt_ms;
         } else {
             idle_pick_next(ctx);
@@ -887,8 +1209,10 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
     }
 
     if (s_test_pattern) {
-        const int center_y = (fb_height / 2) + s_display_center_y_offset + s_center_y_offset;
-        const int center_x = (fb_width / 2) + s_display_center_x_offset + s_center_x_offset;
+        int req_x = 0, req_y = 0, disp_x = 0, disp_y = 0;
+        snapshot_offsets(&req_x, &req_y, &disp_x, &disp_y);
+        const int center_y = (fb_height / 2) + disp_y + req_y;
+        const int center_x = (fb_width / 2) + disp_x + req_x;
         draw_test_pattern(framebuffer, fb_width, fb_height, center_x, center_y);
         return;
     }
@@ -924,9 +1248,21 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
     const uint8_t (*eye_frame)[11] = look_sequence_frame(ctx);
     const int sprite_px_x = 11 * scale_x;
     const int sprite_px_y_nominal = 11 * scale_y_base;
-    const int center_y = (fb_height / 2) + s_display_center_y_offset + s_center_y_offset;
-    const int center_x = (fb_width / 2) + s_display_center_x_offset + s_center_x_offset;
     const int eye_offset = (sprite_px_x * 3) / 4; // Horizontal offset from center
+
+    int req_x = 0, req_y = 0, disp_x = 0, disp_y = 0;
+    snapshot_offsets(&req_x, &req_y, &disp_x, &disp_y);
+
+    int clamped_x = 0;
+    int clamped_y = 0;
+    compute_effective_offsets(fb_width, fb_height, sprite_px_x, sprite_px_y_nominal,
+                              req_x, req_y, disp_x, disp_y,
+                              &clamped_x, &clamped_y);
+    s_last_effective_eye_x_offset = clamped_x;
+    s_last_effective_eye_y_offset = clamped_y;
+
+    const int center_y = (fb_height / 2) + disp_y + clamped_y;
+    const int center_x = (fb_width / 2) + disp_x + clamped_x;
 
     const int base_y0 = center_y - (sprite_px_y_nominal / 2);
     int left_y0 = base_y0 + breath_offset_left_px;
@@ -970,21 +1306,69 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
         }
     }
 
+    uint8_t tired_frame[11][11];
+    uint8_t modifier_frame[11][11];
+    uint8_t sleep_lid_depth = 2;
+    uint8_t angry_lid_depth = 2;
+    eldra_eyes_get_lid_depths(&sleep_lid_depth, &angry_lid_depth);
+    const uint32_t mods = ctx->modifiers;
+    const bool mod_sleepy = (mods & ELDRA_EYES_MOD_SLEEPY) != 0U;
+    const bool mod_hungry = (mods & ELDRA_EYES_MOD_HUNGRY) != 0U;
+    const bool mod_angry_base = (ctx->mood == ELDRA_EYES_MOOD_ANGRY);
+
+    // Layering model:
+    // 1) sleep countdown heavy (final 60s) wins and stays rounded/hooded.
+    // 2) otherwise apply sleepy need as a lighter lid.
+    // 3) angry base mood remains available, including angry+sleepy blend.
+    if (!reactive_dizzy && !ctx->blink.active) {
+        if (ctx->sleep_lid_heavy) {
+            int lid_depth = (int)sleep_lid_depth;
+            if (breath_enabled) {
+                if (breath_wave > 0.30f) {
+                    lid_depth += 1;
+                } else if (breath_wave < -0.30f) {
+                    lid_depth -= 1;
+                }
+            }
+            build_tired_frame(eye_frame, tired_frame, (uint8_t)clamp_int(lid_depth, 0, 6), false);
+            blink_frame = tired_frame;
+            left_y0 += 1;
+            right_y0 += 1;
+        } else if (mod_angry_base && mod_sleepy) {
+            uint8_t blend_depth = (uint8_t)clamp_int((int)angry_lid_depth - 1, 0, 6);
+            build_tired_frame(eye_frame, tired_frame, blend_depth, true);
+            blink_frame = tired_frame;
+            left_y0 += 1;
+            right_y0 += 1;
+            scale_y_left = clamp_int(scale_y_left - 1, 1, 255);
+            scale_y_right = clamp_int(scale_y_right - 1, 1, 255);
+        } else if (mod_sleepy) {
+            uint8_t light_depth = (uint8_t)clamp_int((int)sleep_lid_depth - 1, 0, 6);
+            build_tired_frame(eye_frame, tired_frame, light_depth, false);
+            blink_frame = tired_frame;
+            left_y0 += 1;
+            right_y0 += 1;
+        } else if (mod_angry_base) {
+            build_tired_frame(eye_frame, tired_frame, angry_lid_depth, true);
+            blink_frame = tired_frame;
+            left_y0 += 1;
+            right_y0 += 1;
+            scale_y_left = clamp_int(scale_y_left - 1, 1, 255);
+            scale_y_right = clamp_int(scale_y_right - 1, 1, 255);
+        }
+    }
+
+    const uint8_t (*final_frame)[11] = blink_frame;
+    if (mod_hungry && !reactive_dizzy) {
+        apply_hungry_tint(blink_frame, modifier_frame);
+        final_frame = modifier_frame;
+    }
+
     if (scale_y_left < 1) scale_y_left = 1;
     if (scale_y_right < 1) scale_y_right = 1;
 
     int left_x0 = (center_x - eye_offset) - (sprite_px_x / 2);
     int right_x0 = (center_x + eye_offset) - (sprite_px_x / 2);
-
-    // Clamp positions to framebuffer bounds so we never wrap or draw outside.
-    const int min_x = 0;
-    const int max_x = fb_width - sprite_px_x;
-    const int min_y = 0;
-    const int max_y = fb_height - sprite_px_y_nominal;
-    left_x0 = clamp_int(left_x0, min_x, max_x);
-    right_x0 = clamp_int(right_x0, min_x, max_x);
-    left_y0 = clamp_int(left_y0, min_y, max_y);
-    right_y0 = clamp_int(right_y0, min_y, max_y);
 
     if (reactive_dizzy) {
         float spin_phase = ((float)ctx->reactive_dizzy.elapsed_ms / 1000.0f) * (k_two_pi * 2.5f); // ~2.5 turns per second
@@ -994,9 +1378,73 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
                         right_x0, right_y0, scale_x, scale_y_right, spin_phase + 0.4f);
     } else {
         blit_eye(framebuffer, fb_width, fb_height,
-                 left_x0, left_y0, scale_x, scale_y_left, blink_frame);
+                 left_x0, left_y0, scale_x, scale_y_left, final_frame);
         blit_eye(framebuffer, fb_width, fb_height,
-                 right_x0, right_y0, scale_x, scale_y_right, blink_frame);
+                 right_x0, right_y0, scale_x, scale_y_right, final_frame);
     }
 }
+
+static void copy_eye_frame(uint8_t dst[11][11], const uint8_t src[11][11])
+{
+    for (int row = 0; row < 11; ++row) {
+        for (int col = 0; col < 11; ++col) {
+            dst[row][col] = src[row][col];
+        }
+    }
+}
+
+static void apply_hungry_tint(const uint8_t src[11][11], uint8_t dst[11][11])
+{
+    for (int row = 0; row < 11; ++row) {
+        for (int col = 0; col < 11; ++col) {
+            uint8_t px = src[row][col];
+            // Dim highlights a notch when hungry to convey lower vitality.
+            if (px == 7) {
+                px = 6;
+            } else if (px == 6) {
+                px = 5;
+            }
+            dst[row][col] = px;
+        }
+    }
+}
+
+static void build_tired_frame(const uint8_t src[11][11], uint8_t dst[11][11], uint8_t lid_depth, bool heavy)
+{
+    // Curved upper-lid overlay using fixed per-column cut profiles.
+    // This avoids procedural edge artifacts ("tails"/pillars) when look
+    // frames shift left/right.
+    copy_eye_frame(dst, src);
+
+    static const uint8_t k_cut_light[11] = {0, 0, 1, 1, 1, 2, 1, 1, 1, 0, 0};
+    static const uint8_t k_cut_heavy[11] = {1, 1, 2, 2, 3, 4, 3, 2, 2, 1, 1};
+
+    for (int col = 0; col < 11; ++col) {
+        int lid_row = (heavy ? k_cut_heavy[col] : k_cut_light[col]) + (int)lid_depth;
+        if (lid_row < 1) lid_row = 1;
+        if (lid_row > 9) lid_row = 9;
+
+        for (int row = 0; row < 11; ++row) {
+            if (src[row][col] == 0) {
+                continue;
+            }
+            if (row < lid_row) {
+                dst[row][col] = 0;
+            } else if (row == lid_row) {
+                // Keep hard lid edge near the center to preserve rounded corners.
+                if (col >= 3 && col <= 7) {
+                    dst[row][col] = 3; // soft lid edge
+                } else if (dst[row][col] != 7 && dst[row][col] < 3) {
+                    dst[row][col] = 3;
+                }
+            } else if (row == lid_row + 1 && col >= 4 && col <= 6) {
+                // Soft blend line; preserve bright specular pixels.
+                if (dst[row][col] != 7 && dst[row][col] < 3) {
+                    dst[row][col] = 3;
+                }
+            }
+        }
+    }
+}
+
 

@@ -7,9 +7,12 @@ idf_component_register(
     EMBED_FILES
         assets/glyphs/sleep/glyph_sleep.png
     REQUIRES
+        backlight
         esp_lcd
+        esp_mm
         driver
         freertos
         esp_timer
         exio
+        eldra_logging
 )

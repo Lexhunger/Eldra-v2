@@ -1,4 +1,5 @@
 #include "console_rtc.h"
+#include "eldra_logging.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -103,6 +104,7 @@ esp_err_t ConsoleRTC_Init(void)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&set_t_cmd), TAG, "register rtc_set_time failed");
 
-    ESP_LOGI(TAG, "RTC console commands ready");
+    EL_LOGI(TAG, "RTC console commands ready");
     return ESP_OK;
 }
+

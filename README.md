@@ -19,6 +19,31 @@ Eldra is a small eldritch-cute desktop pet built on an ESP32-S3 with a round TFT
 - **Sensors:** IMU for motion/tilt/shake, ToF for proximity, reed switch for hood, hall sensor for magnets, plus other environmental sensors as they are added.
 - **Actuators:** Round display (eyes/expressions), buzzer for chirps, vibro motor for haptics, and PCA9685-driven servos for small motions and poses.
 
+### Runtime Pipelines (non-blocking)
+- **Render pipe:** `app_main` composes a full framebuffer each tick (`compose_frame`), clears it, draws eyes, then glyphs, and blits once. No network/SD inside the render path.
+- **Eyes engine:** Pure CPU/pixel code (`eldra_eyes_render`). State is set via setters (console/bridge/cloud), never via blocking calls.
+- **Glyphs layer:** Optional forehead runes drawn after eyes; assets are pre-decoded and cached. Offsets/scale are set through console/sleep logic.
+- **Console REPL:** Runs in its own task. Commands talk to modules through bridges (wifi/sd/rtc/imu/emotion/glyph) so UI never blocks rendering.
+- **Cloud task:** Polls/pushes on its own intervals; does not touch eyes directly. All module mutations go through bridge handlers.
+- **Logging:** Ring buffer + SD writer; console prompt is reprinted after async logs to keep the REPL responsive.
+
+Rule of thumb: modules never block each other; cross-module actions go through bridge commands/queues, render path is pull-only from shared state.
+
+### Scaffold + Silos Model
+- **Scaffold:** event queue/bridge code + console command bridge + `app_main` orchestration/runtime loops.
+- **Silos:** render/eyes/glyphs, sleep, cloud, wifi, sensors, storage, emotion.
+- **Contract:** silos do not call each other in blocking paths; scaffold carries intents/events and status updates.
+
+### Component Tagging (Debug Isolation)
+- Every module logs with a stable tag through `EL_LOG*` wrappers.
+- Use `logtags` to list discovered tags and current console routing rules.
+- Use `logfocus` to isolate a subsystem quickly:
+  - `logfocus display`
+  - `logfocus cloud`
+  - `logfocus sleep`
+  - `logfocus scaffold`
+  - `logfocus off` (clear focus rules)
+
 ## Development Roadmap
 1. **Emotion Engine Core:** Define emotion meters, state selection, and event-driven reactions with output hooks for animation and haptics.
 2. **Comms & Logging Backbone:** Build a shared command queue for BLE/IR/RFID/Wi-Fi inputs and a unified logging path to SD/server.

@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "backlight.c"
     INCLUDE_DIRS "."
-    REQUIRES driver freertos
+    REQUIRES driver freertos eldra_logging
 )

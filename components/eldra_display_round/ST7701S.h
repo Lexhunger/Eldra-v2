@@ -64,11 +64,9 @@
 #define EXAMPLE_PIN_NUM_DATA15         17 // R4
 #define EXAMPLE_PIN_NUM_DISP_EN        -1
 
-#if CONFIG_EXAMPLE_DOUBLE_FB
-#define EXAMPLE_LCD_NUM_FB             2
-#else
+// Use a single RGB framebuffer by default for deterministic scan origin with
+// the direct full-frame renderer (demo-safe baseline).
 #define EXAMPLE_LCD_NUM_FB             1
-#endif 
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -106,6 +104,11 @@ esp_err_t ST7701S_CS_EN(void);//Enables SPI CS
 esp_err_t ST7701S_CS_Dis(void);//Disable SPI CS
 esp_err_t ST7701S_reset(void);// LCD Reset
 esp_err_t ST7701S_reinit_sequence(void);// Re-run ST7701S screen init on existing handle
+esp_err_t ST7701S_display_off(void);// 0x28
+esp_err_t ST7701S_display_on(void);// 0x29
+esp_err_t ST7701S_sleep_in(void);// 0x10
+esp_err_t ST7701S_sleep_out(void);// 0x11
+esp_err_t ST7701S_apply_runtime_panel_defaults(void);// normalize gap/orientation + key controller regs
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

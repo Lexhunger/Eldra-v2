@@ -3,6 +3,9 @@
 #include <string.h>
 
 #include "eldra_logging.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 /**
  * @brief Simple ring buffer for incoming commands.
@@ -10,7 +13,10 @@
 #define COMMS_QUEUE_LENGTH 16U
 
 typedef struct {
-    pet_command_t buffer[COMMS_QUEUE_LENGTH];
+    struct {
+        pet_command_t cmd;
+        uint32_t enqueue_ms;
+    } buffer[COMMS_QUEUE_LENGTH];
     size_t head;
     size_t tail;
     size_t count;
@@ -18,6 +24,26 @@ typedef struct {
 
 static const char *TAG = "comms";
 static command_queue_t g_queue;
+static SemaphoreHandle_t g_queue_lock = NULL;
+static comms_stats_t g_stats;
+static uint64_t g_dequeue_latency_sum_ms = 0;
+static uint32_t g_dequeue_latency_samples = 0;
+static const TickType_t k_queue_lock_wait = pdMS_TO_TICKS(2);
+
+static inline bool queue_lock_take(void)
+{
+    if (!g_queue_lock) {
+        return false;
+    }
+    return (xSemaphoreTake(g_queue_lock, k_queue_lock_wait) == pdTRUE);
+}
+
+static inline void queue_lock_give(void)
+{
+    if (g_queue_lock) {
+        xSemaphoreGive(g_queue_lock);
+    }
+}
 
 static bool queue_full(const command_queue_t *queue) {
     return queue && queue->count >= COMMS_QUEUE_LENGTH;
@@ -28,7 +54,13 @@ static bool queue_empty(const command_queue_t *queue) {
 }
 
 void comms_init(void) {
+    if (g_queue_lock == NULL) {
+        g_queue_lock = xSemaphoreCreateMutex();
+    }
     memset(&g_queue, 0, sizeof(g_queue));
+    memset(&g_stats, 0, sizeof(g_stats));
+    g_dequeue_latency_sum_ms = 0;
+    g_dequeue_latency_samples = 0;
 }
 
 bool comms_enqueue_command(const pet_command_t *cmd) {
@@ -36,23 +68,65 @@ bool comms_enqueue_command(const pet_command_t *cmd) {
         log_event(LOG_LEVEL_WARN, TAG, "Rejecting NULL command");
         return false;
     }
+
+    if (!queue_lock_take()) {
+        g_stats.enqueue_drop_lock++;
+        log_event(LOG_LEVEL_WARN, TAG, "Command queue lock timeout, dropping type=%d", cmd->type);
+        return false;
+    }
+
     if (queue_full(&g_queue)) {
+        g_stats.enqueue_drop_full++;
+        queue_lock_give();
         log_event(LOG_LEVEL_WARN, TAG, "Command queue full, dropping type=%d", cmd->type);
         return false;
     }
-    g_queue.buffer[g_queue.tail] = *cmd;
+
+    g_queue.buffer[g_queue.tail].cmd = *cmd;
+    g_queue.buffer[g_queue.tail].enqueue_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
     g_queue.tail = (g_queue.tail + 1U) % COMMS_QUEUE_LENGTH;
     g_queue.count++;
+    g_stats.enqueue_ok++;
+    g_stats.queue_depth = (uint32_t)g_queue.count;
+    if (g_stats.queue_depth > g_stats.queue_max_depth) {
+        g_stats.queue_max_depth = g_stats.queue_depth;
+    }
+    queue_lock_give();
     return true;
 }
 
 bool comms_dequeue_command(pet_command_t *out_cmd) {
-    if (!out_cmd || queue_empty(&g_queue)) {
+    if (!out_cmd) {
         return false;
     }
-    *out_cmd = g_queue.buffer[g_queue.head];
+
+    if (!queue_lock_take()) {
+        return false;
+    }
+    if (queue_empty(&g_queue)) {
+        g_stats.queue_depth = (uint32_t)g_queue.count;
+        queue_lock_give();
+        return false;
+    }
+
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    uint32_t enq_ms = g_queue.buffer[g_queue.head].enqueue_ms;
+    uint32_t lat_ms = now_ms - enq_ms; // wrap-safe
+    *out_cmd = g_queue.buffer[g_queue.head].cmd;
     g_queue.head = (g_queue.head + 1U) % COMMS_QUEUE_LENGTH;
     g_queue.count--;
+    g_stats.dequeue_ok++;
+    g_stats.dequeue_latency_last_ms = lat_ms;
+    if (lat_ms > g_stats.dequeue_latency_max_ms) {
+        g_stats.dequeue_latency_max_ms = lat_ms;
+    }
+    g_dequeue_latency_sum_ms += (uint64_t)lat_ms;
+    g_dequeue_latency_samples++;
+    if (g_dequeue_latency_samples > 0U) {
+        g_stats.dequeue_latency_avg_ms = (uint32_t)(g_dequeue_latency_sum_ms / g_dequeue_latency_samples);
+    }
+    g_stats.queue_depth = (uint32_t)g_queue.count;
+    queue_lock_give();
     return true;
 }
 
@@ -103,6 +177,20 @@ void comms_process_all_pending(emotion_context_t *emotion, uint32_t now_ms) {
     while (comms_dequeue_command(&cmd)) {
         handle_command(emotion, &cmd, now_ms);
     }
+}
+
+void comms_get_stats(comms_stats_t *out_stats)
+{
+    if (!out_stats) {
+        return;
+    }
+    if (!queue_lock_take()) {
+        memset(out_stats, 0, sizeof(*out_stats));
+        return;
+    }
+    *out_stats = g_stats;
+    out_stats->queue_depth = (uint32_t)g_queue.count;
+    queue_lock_give();
 }
 
 void comms_on_ble_packet(const uint8_t *data, size_t len) {

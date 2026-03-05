@@ -16,6 +16,8 @@ idf_component_register(
         config_store
         rtc_driver
         imu_qmi8658
+        exio
+        runtime_monitor
         console_jobs
         console_wifi_bridge
         console_sd_bridge

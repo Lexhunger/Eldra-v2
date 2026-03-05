@@ -1,4 +1,5 @@
 #include "backlight.h"
+#include "eldra_logging.h"
 
 #include <stdbool.h>
 
@@ -48,7 +49,7 @@ void backlight_init_off(void) {
 }
 
 void backlight_setup_pwm(void) {
-    ESP_LOGI(TAG, "Configuring PWM: freq=%d Hz, resolution=%d-bit", CONFIG_BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_LEDC_RESOLUTION);
+    EL_LOGI(TAG, "Configuring PWM: freq=%d Hz, resolution=%d-bit", CONFIG_BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_LEDC_RESOLUTION);
     ledc_timer_config_t ledc_timer = {
         .speed_mode = BACKLIGHT_LEDC_MODE,
         .timer_num = BACKLIGHT_LEDC_TIMER,
@@ -58,7 +59,7 @@ void backlight_setup_pwm(void) {
     };
     esp_err_t err = ledc_timer_config(&ledc_timer);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LEDC timer config failed: %d", err);
+        EL_LOGE(TAG, "LEDC timer config failed: %d", err);
         return;
     }
 
@@ -73,13 +74,13 @@ void backlight_setup_pwm(void) {
     };
     err = ledc_channel_config(&ledc_channel);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LEDC channel config failed: %d", err);
+        EL_LOGE(TAG, "LEDC channel config failed: %d", err);
         return;
     }
 
     s_pwm_ready = true;
     backlight_set_raw(s_cached_raw);
-    ESP_LOGI(TAG, "PWM ready on GPIO%d (raw duty=%u)", BACKLIGHT_GPIO, s_cached_raw);
+    EL_LOGI(TAG, "PWM ready on GPIO%d (raw duty=%u)", BACKLIGHT_GPIO, s_cached_raw);
 }
 
 void backlight_set_raw(uint16_t duty) {
@@ -89,11 +90,11 @@ void backlight_set_raw(uint16_t duty) {
     s_cached_raw = duty;
     if (!s_pwm_ready) {
         // Cache the request; caller should run backlight_setup_pwm later.
-        ESP_LOGW(TAG, "set_raw before PWM init; caching duty=%u", duty);
+        EL_LOGW(TAG, "set_raw before PWM init; caching duty=%u", duty);
         return;
     }
     if (ledc_set_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL, duty) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set LEDC duty");
+        EL_LOGE(TAG, "Failed to set LEDC duty");
         return;
     }
     ledc_update_duty(BACKLIGHT_LEDC_MODE, BACKLIGHT_LEDC_CHANNEL);
@@ -120,7 +121,7 @@ void backlight_ramp_to_percent(uint8_t target_percent, uint16_t step_ms) {
         step_raw = 1;
     }
     if (!s_pwm_ready) {
-        ESP_LOGW(TAG, "ramp requested before PWM init; applying target directly");
+        EL_LOGW(TAG, "ramp requested before PWM init; applying target directly");
         backlight_set_raw(target_raw);
         return;
     }
@@ -145,3 +146,4 @@ void backlight_ramp_to_percent(uint8_t target_percent, uint16_t step_ms) {
 uint16_t backlight_get_raw(void) {
     return s_cached_raw;
 }
+

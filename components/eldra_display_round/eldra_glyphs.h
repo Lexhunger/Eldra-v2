@@ -24,10 +24,16 @@ typedef enum {
 
 void eldra_glyphs_set_layout(eldra_glyph_layout_t layout);
 void eldra_glyphs_init(const eldra_asset_provider_t *provider);
+bool eldra_glyphs_is_initialized(void);
 void eldra_glyphs_show(eldra_glyph_id_t id, int slot);
+void eldra_glyphs_force_show(eldra_glyph_id_t id, int slot);
 void eldra_glyphs_hide(int slot);
 void eldra_glyphs_hide_all(void);
+void eldra_glyphs_hide_unforced(void);
 void eldra_glyphs_set_offset(int slot, int dx, int dy);
+void eldra_glyphs_set_scale(int scale); /* integer scale >=1 */
+void eldra_glyphs_set_display_center_offset(int dx, int dy);
+void eldra_glyphs_set_eye_center_offset(int dx, int dy);
 void eldra_glyphs_render(uint16_t *fb, int fb_w, int fb_h, uint64_t now_ms);
 
 #ifdef __cplusplus

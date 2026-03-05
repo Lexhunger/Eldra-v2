@@ -1,4 +1,5 @@
 #include "boot_diagnostics.h"
+#include "eldra_logging.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -66,7 +67,7 @@ void diag_init(void) {
 }
 
 void diag_signal_error_lcd_init(uint16_t *framebuffer, int width, int height) {
-    ESP_LOGE(TAG, "LCD init/test failed; entering diagnostic SOS loop");
+    EL_LOGE(TAG, "LCD init/test failed; entering diagnostic SOS loop");
     backlight_set_brightness_percent(CONFIG_BACKLIGHT_DIAG_PERCENT);
 
     bool invert = false;
@@ -76,3 +77,4 @@ void diag_signal_error_lcd_init(uint16_t *framebuffer, int width, int height) {
         buzzer_sos_pattern();
     }
 }
+

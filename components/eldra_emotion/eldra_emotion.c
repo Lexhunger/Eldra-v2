@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "eldra_logging.h"
+#include "esp_random.h"
 
 /**
  * @brief Meter limits for all tracked needs.
@@ -33,7 +34,8 @@
 #define ENERGY_DECAY_SEC_PER_POINT 900U  // ~15 min per energy point (drops ~60 in 15h)
 #define ENERGY_RECOVER_SLEEP_SEC_PER_POINT 300U // ~5 min per energy point while sleeping/resting
 #define FEAR_DECAY_PER_SEC 1U
-#define ELDRITCH_CHARGE_RISE_MS 5000U /* +1 charge per 5 seconds */
+#define INACTIVITY_ELDRITCH_START_MS 300000U /* 5 minutes idle before decay */
+#define INACTIVITY_ELDRITCH_DECAY_SEC 180U   /* then -1 every 3 minutes */
 
 /**
  * @brief Event-driven meter deltas.
@@ -52,7 +54,9 @@
 #define PLAY_HUNGER_RISE 8
 
 #define SHAKE_FEAR_BOOST 12
-#define SHAKE_ELDRITCH_BOOST 3
+#define SHAKE_ELDRITCH_BOOST 0
+#define PLAY_ELDRITCH_BOOST 6
+#define PET_ELDRITCH_BIG_BOOST 2
 
 #define EDGE_FEAR_SPIKE 25
 #define EDGE_HAPPINESS_DROP 6
@@ -76,7 +80,7 @@
  * Tuned to keep "needs" states (hungry, sleepy, lonely) above feel-good states.
  */
 #define THRESHOLD_FEAR_SCARED 75
-#define THRESHOLD_ELDRITCH 80
+#define THRESHOLD_ELDRITCH 96
 #define THRESHOLD_HUNGER 30   // <= this is hungry
 #define THRESHOLD_HUNGER_HANGRY 15
 #define THRESHOLD_ENERGY_SLEEPY 30
@@ -91,14 +95,29 @@
 #define THRESHOLD_SAD_SUPPORT_ENERGY 30
 #define THRESHOLD_ELDRITCH_GATED_HUNGER 55
 #define THRESHOLD_ELDRITCH_GATED_SLEEPY 35
+#define THRESHOLD_ELDRITCH_SUPER_HAPPY 88
+#define THRESHOLD_ELDRITCH_SUPER_SOCIAL 85
+#define THRESHOLD_ELDRITCH_SUPER_ENERGY 70
+#define THRESHOLD_ELDRITCH_SUPER_BATTERY 40
+#define THRESHOLD_ELDRITCH_SUPER_FEAR_MAX 20
+#define THRESHOLD_ELDRITCH_RECENT_PLAY_MS 12000U
+#define THRESHOLD_ELDRITCH_RECENT_PET_MS 12000U
 #define THRESHOLD_PLAYFUL_RECENT_MS 30000U
 #define THRESHOLD_PLAYFUL_HAPPINESS 70
 #define THRESHOLD_PLAYFUL_SOCIAL 60
-#define SLEEP_IDLE_MS 600000U // 10 minutes of no interaction triggers sleep during quiet hours
+#define THRESHOLD_ANGRY_HUNGER THRESHOLD_HUNGER
+#define THRESHOLD_ANGRY_TIRED_ENERGY THRESHOLD_ENERGY_SLEEPY
+#define THRESHOLD_ANGRY_BORED_SOCIAL THRESHOLD_SOCIAL_LONELY
+#define THRESHOLD_ANGRY_REALLY_BORED_SOCIAL THRESHOLD_SOCIAL_ISOLATED
+#define SLEEP_IDLE_MS 300000U // 5 minutes of no interaction triggers sleep during quiet hours
 // Sleep window and mood log interval are configurable via setters.
 static uint8_t s_sleep_start_hour = 22; // 10 PM
 static uint8_t s_sleep_end_hour = 8;    // 8 AM
-static uint32_t s_mood_log_interval_ms = 20 * 60 * 1000U; // default 20 minutes
+static uint32_t s_mood_log_interval_ms = 5 * 60 * 1000U; // default 5 minutes
+static uint8_t s_angry_dizzy_count_threshold = 3;         // trigger on >3 dizzy events
+static uint32_t s_angry_dizzy_window_ms = 5 * 60 * 1000U; // 5-minute rolling window
+static uint32_t s_angry_override_min_ms = 2 * 60 * 1000U; // 2 minutes
+static uint32_t s_angry_override_max_ms = 5 * 60 * 1000U; // 5 minutes
 
 static const char *TAG = "emotion";
 
@@ -163,6 +182,8 @@ static const char *state_name(emotion_state_t state) {
             return "HAPPY";
         case EMOTION_STATE_SAD:
             return "SAD";
+        case EMOTION_STATE_ANGRY:
+            return "ANGRY";
         case EMOTION_STATE_LONELY:
             return "LONELY";
         case EMOTION_STATE_SLEEPY:
@@ -182,15 +203,39 @@ static const char *state_name(emotion_state_t state) {
     }
 }
 
+static uint32_t random_between_u32(uint32_t min_v, uint32_t max_v)
+{
+    if (max_v <= min_v) {
+        return min_v;
+    }
+    uint32_t range = max_v - min_v;
+    return min_v + (esp_random() % (range + 1U));
+}
+
+static bool is_eldritch_supercharged(const emotion_context_t *ctx, uint32_t now_ms)
+{
+    bool recent_play = elapsed_ms(ctx->last_play_ms, now_ms) <= THRESHOLD_ELDRITCH_RECENT_PLAY_MS;
+    bool recent_pet = elapsed_ms(ctx->last_pet_ms, now_ms) <= THRESHOLD_ELDRITCH_RECENT_PET_MS;
+
+    return (ctx->eldritch_charge >= THRESHOLD_ELDRITCH) &&
+           recent_play &&
+           recent_pet &&
+           (ctx->happiness >= THRESHOLD_ELDRITCH_SUPER_HAPPY) &&
+           (ctx->social >= THRESHOLD_ELDRITCH_SUPER_SOCIAL) &&
+           (ctx->energy >= THRESHOLD_ELDRITCH_SUPER_ENERGY) &&
+           (ctx->hunger >= THRESHOLD_ELDRITCH_GATED_HUNGER) &&
+           (ctx->battery_percent >= THRESHOLD_ELDRITCH_SUPER_BATTERY) &&
+           (ctx->fear <= THRESHOLD_ELDRITCH_SUPER_FEAR_MAX);
+}
+
 static emotion_need_mask_t compute_need_mask(const emotion_context_t *ctx, uint32_t now_ms) {
-    (void)now_ms;
     emotion_need_mask_t mask = EMO_NEED_NONE;
     if (ctx->hunger <= THRESHOLD_HUNGER) mask |= EMO_NEED_HUNGRY;
     if (ctx->social <= THRESHOLD_SOCIAL_LONELY) mask |= EMO_NEED_LONELY;
     if (ctx->energy <= THRESHOLD_ENERGY_SLEEPY || ctx->battery_percent <= THRESHOLD_BATTERY_SLEEPY) mask |= EMO_NEED_SLEEPY;
     if (ctx->fear >= THRESHOLD_FEAR_SCARED || ctx->scared_active) mask |= EMO_NEED_SCARED;
     if (ctx->happiness >= THRESHOLD_PLAYFUL_HAPPINESS && ctx->social >= THRESHOLD_PLAYFUL_SOCIAL) mask |= EMO_NEED_PLAYFUL;
-    if (ctx->eldritch_charge >= THRESHOLD_ELDRITCH) mask |= EMO_NEED_ELDRITCH_READY;
+    if (is_eldritch_supercharged(ctx, now_ms)) mask |= EMO_NEED_ELDRITCH_READY;
     return mask;
 }
 
@@ -242,12 +287,8 @@ static emotion_state_t emotion_select_state(const emotion_context_t *ctx, uint32
     if (ctx->sleep_forced) {
         return EMOTION_STATE_SLEEPY;
     }
-    // Eldritch is gated: only when not hungry/sleepy and energy reasonably high.
-    if (ctx->eldritch_charge >= THRESHOLD_ELDRITCH &&
-        ctx->hunger > 30 && // not hungry
-        ctx->energy > THRESHOLD_ELDRITCH_GATED_SLEEPY &&
-        ctx->battery_percent > THRESHOLD_BATTERY_SLEEPY) {
-        return EMOTION_STATE_ELDRITCH;
+    if (timer_active(now_ms, ctx->angry_until_ms)) {
+        return EMOTION_STATE_ANGRY;
     }
     bool food_coma = ctx->hunger > 100;
     if (food_coma) {
@@ -256,13 +297,17 @@ static emotion_state_t emotion_select_state(const emotion_context_t *ctx, uint32
     if (ctx->hunger == 0) {
         return EMOTION_STATE_SLEEPY; // stasis until fed
     }
-    if (ctx->hunger <= THRESHOLD_HUNGER_HANGRY) {
-        return EMOTION_STATE_HUNGRY; // hangry
-    }
-    if (ctx->hunger <= THRESHOLD_HUNGER) {
-        // If hunger is high AND social is low, lean sad/hungry blend by picking SAD.
-        if (ctx->social <= THRESHOLD_SOCIAL_LONELY || ctx->happiness <= THRESHOLD_HAPPINESS_SAD) {
-            return EMOTION_STATE_SAD;
+    if (ctx->hunger <= THRESHOLD_ANGRY_HUNGER) {
+        // Requested angry triggers:
+        // 1) hungry + tired + bored
+        // 2) really bored + hungry
+        bool hungry_tired_bored =
+            (ctx->energy <= THRESHOLD_ANGRY_TIRED_ENERGY) &&
+            (ctx->social <= THRESHOLD_ANGRY_BORED_SOCIAL);
+        bool really_bored_hungry =
+            (ctx->social <= THRESHOLD_ANGRY_REALLY_BORED_SOCIAL);
+        if (hungry_tired_bored || really_bored_hungry || ctx->hunger <= THRESHOLD_HUNGER_HANGRY) {
+            return EMOTION_STATE_ANGRY;
         }
         return EMOTION_STATE_HUNGRY;
     }
@@ -290,6 +335,11 @@ static emotion_state_t emotion_select_state(const emotion_context_t *ctx, uint32
     }
     if (ctx->happiness >= THRESHOLD_HAPPINESS_HAPPY) {
         return EMOTION_STATE_HAPPY;
+    }
+    // Eldritch is intentionally ultra-rare and should only appear during
+    // short, super-charged excitement windows.
+    if (is_eldritch_supercharged(ctx, now_ms)) {
+        return EMOTION_STATE_ELDRITCH;
     }
     return EMOTION_STATE_NEUTRAL;
 }
@@ -332,6 +382,9 @@ void emotion_init(emotion_context_t *ctx, uint32_t now_ms) {
     ctx->active_needs = EMO_NEED_NONE;
     ctx->affect = EMO_AFFECT_NEUTRAL;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
 }
 
 void emotion_set_battery_percent(emotion_context_t *ctx, uint8_t percent) {
@@ -351,6 +404,7 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
     uint32_t total_ms = dt_ms + ctx->tick_accum_ms;
     uint32_t seconds = total_ms / 1000U;
     ctx->tick_accum_ms = total_ms % 1000U;
+    uint32_t idle_ms = elapsed_ms(ctx->last_interaction_ms, now_ms);
 
     if (seconds > 0U) {
         // Passive drift: needs creep unless refreshed by events.
@@ -359,10 +413,16 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
         static uint32_t social_accum_sec = 0;
         static uint32_t energy_accum_sec = 0;
         static uint32_t sleep_recover_sec = 0;
+        static uint32_t eldritch_idle_accum_sec = 0;
         hunger_accum_sec += seconds;
         social_accum_sec += seconds;
         energy_accum_sec += seconds;
         sleep_recover_sec += seconds;
+        if (idle_ms >= INACTIVITY_ELDRITCH_START_MS) {
+            eldritch_idle_accum_sec += seconds;
+        } else {
+            eldritch_idle_accum_sec = 0;
+        }
         while (hunger_accum_sec >= HUNGER_DECAY_SEC_PER_POINT) {
             apply_delta_hunger(&ctx->hunger, -1);
             hunger_accum_sec -= HUNGER_DECAY_SEC_PER_POINT;
@@ -374,6 +434,11 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
         while (energy_accum_sec >= ENERGY_DECAY_SEC_PER_POINT) {
             apply_delta(&ctx->energy, -1);
             energy_accum_sec -= ENERGY_DECAY_SEC_PER_POINT;
+        }
+        while (eldritch_idle_accum_sec >= INACTIVITY_ELDRITCH_DECAY_SEC) {
+            apply_delta(&ctx->eldritch_charge, -1);
+            apply_delta(&ctx->happiness, -1); // boredom creeps in
+            eldritch_idle_accum_sec -= INACTIVITY_ELDRITCH_DECAY_SEC;
         }
         // Sleep recovery: if forced asleep or already sleepy, regain energy faster.
         if (ctx->sleep_forced || ctx->current_state == EMOTION_STATE_SLEEPY) {
@@ -387,12 +452,9 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
         apply_delta(&ctx->fear, -((int32_t)FEAR_DECAY_PER_SEC * (int32_t)seconds));
     }
 
-    uint32_t eldritch_total = dt_ms + ctx->eldritch_accum_ms;
-    uint32_t eldritch_steps = eldritch_total / ELDRITCH_CHARGE_RISE_MS;
-    ctx->eldritch_accum_ms = eldritch_total % ELDRITCH_CHARGE_RISE_MS;
-    if (eldritch_steps > 0U) {
-        apply_delta(&ctx->eldritch_charge, (int32_t)eldritch_steps);
-    }
+    // No passive eldritch growth: this meter is driven by explicit
+    // interaction events only (play/pet/shake). Keep accumulator cleared.
+    ctx->eldritch_accum_ms = 0U;
 
     // Fullness penalty: if stuffed (>90 satiety) drain energy slowly; >100 triggers coma via state above.
     if (ctx->hunger > 90) {
@@ -410,7 +472,11 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
     if (is_sleep_window()) {
         uint32_t idle_ms = elapsed_ms(ctx->last_interaction_ms, now_ms);
         if (idle_ms >= SLEEP_IDLE_MS) {
-            ctx->sleep_forced = true;
+            if (!ctx->sleep_forced) {
+                ctx->sleep_forced = true;
+                log_event(LOG_LEVEL_INFO, TAG, "Auto-sleep: idle=%ums within window (%u-%u)",
+                          (unsigned)idle_ms, (unsigned)s_sleep_start_hour, (unsigned)s_sleep_end_hour);
+            }
         }
     }
 
@@ -420,7 +486,9 @@ void emotion_on_tick(emotion_context_t *ctx, uint32_t now_ms) {
     // Periodic mood log to SD/console (configurable; 0 disables).
     if (s_mood_log_interval_ms > 0) {
         uint32_t delta = elapsed_ms(ctx->last_mood_log_ms, now_ms);
-        if (delta >= s_mood_log_interval_ms) {
+        // Guarantee a first log soon after boot even if interval is large.
+        bool due_initial = (ctx->last_mood_log_ms == 0 && delta >= 5000U);
+        if (delta >= s_mood_log_interval_ms || due_initial) {
             int8_t val = 0, aro = 0;
             emotion_affect_t aff = compute_affect(ctx, &val, &aro);
             emotion_need_mask_t needs = ctx->active_needs;
@@ -453,6 +521,9 @@ void emotion_on_feed(emotion_context_t *ctx, uint32_t food_type, uint32_t now_ms
     ctx->last_feed_ms = now_ms;
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);
     handle_state_transition(ctx, next, now_ms);
@@ -472,9 +543,15 @@ void emotion_on_pet(emotion_context_t *ctx, uint32_t intensity, uint32_t now_ms)
     apply_delta(&ctx->happiness, happy);
     apply_delta(&ctx->social, social);
     apply_delta(&ctx->fear, -PET_FEAR_DROP);
+    if (intensity > 0) {
+        apply_delta(&ctx->eldritch_charge, PET_ELDRITCH_BIG_BOOST);
+    }
     ctx->last_pet_ms = now_ms;
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);
     handle_state_transition(ctx, next, now_ms);
@@ -488,9 +565,13 @@ void emotion_on_play(emotion_context_t *ctx, uint32_t now_ms) {
     apply_delta(&ctx->social, PLAY_SOCIAL_BOOST);
     apply_delta(&ctx->energy, -PLAY_ENERGY_COST);
     apply_delta_hunger(&ctx->hunger, PLAY_HUNGER_RISE);
+    apply_delta(&ctx->eldritch_charge, PLAY_ELDRITCH_BOOST);
     ctx->last_play_ms = now_ms;
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);
     handle_state_transition(ctx, next, now_ms);
@@ -512,6 +593,29 @@ void emotion_on_shake(emotion_context_t *ctx, int intensity, uint32_t now_ms) {
     ctx->last_shake_ms = now_ms;
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+
+    if (ctx->dizzy_burst_window_start_ms == 0 ||
+        elapsed_ms(ctx->dizzy_burst_window_start_ms, now_ms) > s_angry_dizzy_window_ms) {
+        ctx->dizzy_burst_window_start_ms = now_ms;
+        ctx->dizzy_burst_count = 1;
+    } else if (ctx->dizzy_burst_count < 255U) {
+        ctx->dizzy_burst_count++;
+    }
+
+    if (ctx->dizzy_burst_count > s_angry_dizzy_count_threshold) {
+        uint32_t hold_ms = random_between_u32(s_angry_override_min_ms, s_angry_override_max_ms);
+        uint32_t until = now_ms + hold_ms;
+        if (!timer_active(now_ms, ctx->angry_until_ms) ||
+            ((int32_t)(until - ctx->angry_until_ms) > 0)) {
+            ctx->angry_until_ms = until;
+        }
+        apply_delta(&ctx->happiness, -3);
+        ctx->dizzy_burst_window_start_ms = now_ms;
+        ctx->dizzy_burst_count = 0;
+        log_event(LOG_LEVEL_INFO, TAG,
+                  "Angry escalation: dizzy burst exceeded threshold (%u), hold=%ums",
+                  (unsigned)s_angry_dizzy_count_threshold, (unsigned)hold_ms);
+    }
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);
     handle_state_transition(ctx, next, now_ms);
@@ -561,6 +665,9 @@ void emotion_on_voice_command(emotion_context_t *ctx, uint32_t phrase_id, uint32
     ctx->last_voice_ms = now_ms;
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);
     handle_state_transition(ctx, next, now_ms);
@@ -601,6 +708,9 @@ void emotion_force_sleep(emotion_context_t *ctx, bool enable, uint32_t now_ms) {
     ctx->last_interaction_ms = now_ms;
     if (enable) {
         apply_delta(&ctx->energy, -5);
+        log_event(LOG_LEVEL_INFO, TAG, "Sleep forced ON at %ums", (unsigned)now_ms);
+    } else {
+        log_event(LOG_LEVEL_INFO, TAG, "Sleep forced OFF at %ums", (unsigned)now_ms);
     }
 }
 
@@ -613,6 +723,34 @@ void emotion_set_mood_log_interval_minutes(uint32_t minutes) {
     EL_LOGI(TAG, "Mood log interval set to %u minutes%s", (unsigned)minutes, minutes == 0 ? " (disabled)" : "");
 }
 
+uint32_t emotion_get_mood_log_interval_ms(void)
+{
+    return s_mood_log_interval_ms;
+}
+
+void emotion_set_angry_policy(uint8_t dizzy_count_threshold,
+                              uint32_t dizzy_window_ms,
+                              uint32_t override_min_ms,
+                              uint32_t override_max_ms)
+{
+    if (dizzy_count_threshold < 1U) dizzy_count_threshold = 1U;
+    if (dizzy_window_ms < 10000U) dizzy_window_ms = 10000U;
+    if (override_min_ms < 1000U) override_min_ms = 1000U;
+    if (override_max_ms < override_min_ms) override_max_ms = override_min_ms;
+    if (override_max_ms > 30U * 60U * 1000U) override_max_ms = 30U * 60U * 1000U;
+
+    s_angry_dizzy_count_threshold = dizzy_count_threshold;
+    s_angry_dizzy_window_ms = dizzy_window_ms;
+    s_angry_override_min_ms = override_min_ms;
+    s_angry_override_max_ms = override_max_ms;
+
+    EL_LOGI(TAG, "Angry policy set: dizzy_count>%u window=%ums hold=%u..%ums",
+            (unsigned)s_angry_dizzy_count_threshold,
+            (unsigned)s_angry_dizzy_window_ms,
+            (unsigned)s_angry_override_min_ms,
+            (unsigned)s_angry_override_max_ms);
+}
+
 void emotion_on_curiosity_ping(emotion_context_t *ctx, uint32_t now_ms) {
     if (!ctx) return;
     // Placeholder: small positive nudge, can be tuned later when curiosity sensors arrive.
@@ -620,6 +758,37 @@ void emotion_on_curiosity_ping(emotion_context_t *ctx, uint32_t now_ms) {
     apply_delta(&ctx->social, 1);
     ctx->last_interaction_ms = now_ms;
     ctx->sleep_forced = false;
+    ctx->angry_until_ms = 0;
+    ctx->dizzy_burst_window_start_ms = 0;
+    ctx->dizzy_burst_count = 0;
+}
+
+void emotion_on_sensor_irritation(emotion_context_t *ctx, uint8_t intensity, uint32_t duration_ms, uint32_t now_ms)
+{
+    if (!ctx) {
+        return;
+    }
+    uint32_t dur = duration_ms;
+    if (dur < 1000U) dur = 1000U;
+    if (dur > 30U * 60U * 1000U) dur = 30U * 60U * 1000U;
+
+    int32_t bounded = (int32_t)intensity;
+    if (bounded > 100) bounded = 100;
+
+    // Small negative-valence nudge without turning into scared by default.
+    apply_delta(&ctx->happiness, -(bounded / 20)); // up to -5
+    apply_delta(&ctx->fear, +(bounded / 25));      // up to +4
+
+    uint32_t until = now_ms + dur;
+    if (!timer_active(now_ms, ctx->angry_until_ms) ||
+        ((int32_t)(until - ctx->angry_until_ms) > 0)) {
+        ctx->angry_until_ms = until;
+    }
+    ctx->last_interaction_ms = now_ms;
+    ctx->sleep_forced = false;
+
+    emotion_state_t next = emotion_select_state(ctx, now_ms);
+    handle_state_transition(ctx, next, now_ms);
 }
 
 __attribute__((weak)) void emotion_notify_state_change(emotion_state_t old_state,

@@ -8,6 +8,7 @@
 #include "esp_console.h"
 #include "eldra_comms.h"
 #include "eldra_eyes.h"
+#include "eldra_glyphs.h"
 #include "config_store.h"
 
 static const char *TAG = "console_emotion";
@@ -19,6 +20,7 @@ static const char *state_name(emotion_state_t st)
         case EMOTION_STATE_NEUTRAL: return "NEUTRAL";
         case EMOTION_STATE_HAPPY: return "HAPPY";
         case EMOTION_STATE_SAD: return "SAD";
+        case EMOTION_STATE_ANGRY: return "ANGRY";
         case EMOTION_STATE_LONELY: return "LONELY";
         case EMOTION_STATE_SLEEPY: return "SLEEPY";
         case EMOTION_STATE_HUNGRY: return "HUNGRY";
@@ -40,6 +42,7 @@ static emotion_state_t parse_state(const char *s, bool *ok)
     if (strcasecmp(s, "NEUTRAL") == 0) return EMOTION_STATE_NEUTRAL;
     if (strcasecmp(s, "HAPPY") == 0) return EMOTION_STATE_HAPPY;
     if (strcasecmp(s, "SAD") == 0) return EMOTION_STATE_SAD;
+    if (strcasecmp(s, "ANGRY") == 0) return EMOTION_STATE_ANGRY;
     if (strcasecmp(s, "LONELY") == 0) return EMOTION_STATE_LONELY;
     if (strcasecmp(s, "SLEEPY") == 0) return EMOTION_STATE_SLEEPY;
     if (strcasecmp(s, "HUNGRY") == 0) return EMOTION_STATE_HUNGRY;
@@ -51,7 +54,7 @@ static emotion_state_t parse_state(const char *s, bool *ok)
     // Accept numeric enums for convenience.
     char *end = NULL;
     long v = strtol(s, &end, 10);
-    if (end != s && v >= EMOTION_STATE_NEUTRAL && v <= EMOTION_STATE_DIZZY) {
+    if (end != s && v >= EMOTION_STATE_NEUTRAL && v <= EMOTION_STATE_ANGRY) {
         return (emotion_state_t)v;
     }
     if (ok) *ok = false;
@@ -161,6 +164,24 @@ static int cmd_state_show(int argc, char **argv)
     return 0;
 }
 
+static int cmd_log_interval(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: emo_log_interval <minutes> (0=off)\n");
+        return 0;
+    }
+    int minutes = atoi(argv[1]);
+    if (minutes < 0) minutes = 0;
+    emotion_set_mood_log_interval_minutes((uint32_t)minutes);
+    config_store_t cfg;
+    if (config_store_load(&cfg) == ESP_OK) {
+        cfg.mood_log_interval_minutes = minutes;
+        (void)config_store_save(&cfg);
+    }
+    printf("Mood log interval set to %d minute(s)%s\n", minutes, minutes == 0 ? " (disabled)" : "");
+    return 0;
+}
+
 static int cmd_eyes_offset(int argc, char **argv)
 {
     if (argc < 3) {
@@ -178,13 +199,16 @@ static int cmd_eyes_offset(int argc, char **argv)
         }
     }
     eldra_eyes_set_center_offset(x, y);
+    int eff_x = x, eff_y = y;
+    eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     if (persist) {
         config_store_t cfg;
         if (config_store_load(&cfg) == ESP_OK) {
-            cfg.eyes_center_x_offset = x;
-            cfg.eyes_center_y_offset = y;
+            cfg.eyes_center_x_offset = eff_x;
+            cfg.eyes_center_y_offset = eff_y;
             if (config_store_save(&cfg) == ESP_OK) {
-                printf("Eyes center offset persisted to config (x=%d y=%d)\n", x, y);
+                printf("Eyes center offset persisted to config (requested x=%d y=%d, saved/effective x=%d y=%d)\n",
+                       x, y, eff_x, eff_y);
             } else {
                 printf("Persist failed (save error)\n");
             }
@@ -192,7 +216,8 @@ static int cmd_eyes_offset(int argc, char **argv)
             printf("Persist failed (config load error)\n");
         }
     } else {
-        printf("Eyes center offset set to x=%d y=%d (not persisted)\n", x, y);
+        printf("Eyes center offset set (requested x=%d y=%d, effective x=%d y=%d; not persisted)\n",
+               x, y, eff_x, eff_y);
     }
     return 0;
 }
@@ -217,6 +242,76 @@ static int cmd_eyes_test(int argc, char **argv)
     return 0;
 }
 
+static int cmd_eyes_lid(int argc, char **argv)
+{
+    uint8_t sleep_depth = 0;
+    uint8_t angry_depth = 0;
+    eldra_eyes_get_lid_depths(&sleep_depth, &angry_depth);
+
+    if (argc == 1) {
+        printf("Lid depths: sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+        printf("Usage: eyes_lid <sleep_depth 0..6> [angry_depth 0..6] [persist|temp]\n");
+        return 0;
+    }
+
+    char *end = NULL;
+    int sleep_req = (int)strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0') {
+        printf("Invalid sleep depth '%s'. Allowed range is 0..6\n", argv[1]);
+        return 0;
+    }
+
+    int angry_req = (int)angry_depth;
+    int mode_arg_index = -1;
+    if (argc >= 3) {
+        end = NULL;
+        int parsed = (int)strtol(argv[2], &end, 10);
+        if (end != argv[2] && *end == '\0') {
+            angry_req = parsed;
+            mode_arg_index = (argc >= 4) ? 3 : -1;
+        } else {
+            mode_arg_index = 2;
+        }
+    }
+
+    bool persist = true;
+    if (mode_arg_index > 0) {
+        if (strcasecmp(argv[mode_arg_index], "temp") == 0 || strcasecmp(argv[mode_arg_index], "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(argv[mode_arg_index], "persist") == 0) {
+            persist = true;
+        } else {
+            printf("Invalid mode '%s'. Use persist|temp\n", argv[mode_arg_index]);
+            return 0;
+        }
+    }
+
+    if (sleep_req < 0 || sleep_req > 6 || angry_req < 0 || angry_req > 6) {
+        printf("Invalid depth. Allowed range is 0..6\n");
+        return 0;
+    }
+
+    eldra_eyes_set_lid_depths((uint8_t)sleep_req, (uint8_t)angry_req);
+    eldra_eyes_get_lid_depths(&sleep_depth, &angry_depth);
+    if (persist) {
+        config_store_t cfg = {0};
+        if (config_store_load(&cfg) == ESP_OK) {
+            cfg.sleep_lid_depth = (int)sleep_depth;
+            cfg.angry_lid_depth = (int)angry_depth;
+            if (config_store_save(&cfg) == ESP_OK) {
+                printf("Lid depths set and persisted: sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+            } else {
+                printf("Lid depths set (persist failed): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+            }
+        } else {
+            printf("Lid depths set (config load failed): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+        }
+    } else {
+        printf("Lid depths set (not persisted): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+    }
+    return 0;
+}
+
 static int cmd_disp_center(int argc, char **argv)
 {
     if (argc < 3) {
@@ -234,13 +329,19 @@ static int cmd_disp_center(int argc, char **argv)
         }
     }
     eldra_eyes_set_display_center_offset(x, y);
+    eldra_glyphs_set_display_center_offset(x, y);
+    int raw_x = 0, raw_y = 0;
+    int eff_x = 0, eff_y = 0;
+    eldra_eyes_get_display_center_offset(&raw_x, &raw_y);
+    eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     if (persist) {
         config_store_t cfg;
         if (config_store_load(&cfg) == ESP_OK) {
             cfg.display_center_x_offset = x;
             cfg.display_center_y_offset = y;
             if (config_store_save(&cfg) == ESP_OK) {
-                printf("Display center offset persisted (x=%d y=%d)\n", x, y);
+                printf("Display center persisted (requested x=%d y=%d, applied x=%d y=%d, effective eyes x=%d y=%d)\n",
+                       x, y, raw_x, raw_y, eff_x, eff_y);
             } else {
                 printf("Persist failed (save error)\n");
             }
@@ -248,7 +349,8 @@ static int cmd_disp_center(int argc, char **argv)
             printf("Persist failed (config load error)\n");
         }
     } else {
-        printf("Display center offset set to x=%d y=%d (not persisted)\n", x, y);
+        printf("Display center set (requested x=%d y=%d, applied x=%d y=%d, effective eyes x=%d y=%d; not persisted)\n",
+               x, y, raw_x, raw_y, eff_x, eff_y);
     }
     return 0;
 }
@@ -305,6 +407,14 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&show_cmd), TAG, "register emo_state_show failed");
 
+    const esp_console_cmd_t logint_cmd = {
+        .command = "emo_log_interval",
+        .help = "Set mood log interval in minutes (0 disables logging). Usage: emo_log_interval <minutes>",
+        .hint = NULL,
+        .func = &cmd_log_interval,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&logint_cmd), TAG, "register emo_log_interval failed");
+
     const esp_console_cmd_t offset_cmd = {
         .command = "eyes_offset",
         .help = "Set eye center offset in pixels (persists by default). Usage: eyes_offset <x> <y> [persist|temp] (positive=right/down)",
@@ -320,6 +430,14 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
         .func = &cmd_eyes_test,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&test_cmd), TAG, "register eyes_test failed");
+
+    const esp_console_cmd_t lid_cmd = {
+        .command = "eyes_lid",
+        .help = "Set/persist lid depth. Usage: eyes_lid <sleep_depth 0..6> [angry_depth 0..6] [persist|temp]",
+        .hint = NULL,
+        .func = &cmd_eyes_lid,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&lid_cmd), TAG, "register eyes_lid failed");
 
     const esp_console_cmd_t disp_center_cmd = {
         .command = "disp_center",

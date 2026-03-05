@@ -21,6 +21,18 @@ typedef enum {
 } log_level_t;
 
 /**
+ * @brief Runtime snapshot for a discovered log tag.
+ */
+typedef struct {
+    char tag[16];
+    uint32_t seen_count;
+    uint32_t last_seen_ms;
+    bool has_console_rule;
+    bool console_enabled;
+    log_level_t console_min_level;
+} log_tag_info_t;
+
+/**
  * @brief Initialize the logging layer. Placeholder for future SD/server wiring.
  */
 void log_init(void);
@@ -68,6 +80,22 @@ void log_sd_force_rotate(void);
 void log_sd_notify_mounted(void);
 
 /**
+ * @brief Optional platform hook invoked immediately before SD-backed stdio.
+ *
+ * The default implementation is a no-op. Platforms can override this with a
+ * strong symbol to assert shared-bus guards before file I/O.
+ */
+void eldra_platform_before_sd_io(void);
+
+/**
+ * @brief Optional platform hook invoked immediately after SD-backed stdio.
+ *
+ * The default implementation is a no-op. Platforms can override this with a
+ * strong symbol to restore or reassert shared-bus guards after file I/O.
+ */
+void eldra_platform_after_sd_io(void);
+
+/**
  * @brief Set the minimum level that is emitted to the console (UART). Ring/SD buffering is unaffected.
  */
 void log_set_console_level(log_level_t level);
@@ -76,6 +104,32 @@ void log_set_console_level(log_level_t level);
  * @brief Temporarily raise console level, reverting after duration_ms to revert_level.
  */
 void log_set_console_level_temporary(log_level_t level, uint32_t duration_ms, log_level_t revert_level);
+
+/**
+ * @brief Set a per-tag console rule. This affects console output only; SD/ring are unchanged.
+ *        If enabled=false, the tag is muted on console regardless of global level.
+ * @return true when rule was set, false if table full/invalid tag.
+ */
+bool log_console_set_tag_rule(const char *tag, bool enabled, log_level_t min_level);
+
+/**
+ * @brief Clear a per-tag console rule for a specific tag.
+ */
+void log_console_clear_tag_rule(const char *tag);
+
+/**
+ * @brief Clear all per-tag console rules.
+ */
+void log_console_clear_all_tag_rules(void);
+
+/**
+ * @brief Snapshot known tags observed at runtime and their current console routing state.
+ * @param out Destination array (can be NULL to query total only).
+ * @param max_entries Capacity of out[].
+ * @param out_total Optional total number of known tags.
+ * @return Number of entries written to out[].
+ */
+size_t log_get_tag_snapshot(log_tag_info_t *out, size_t max_entries, size_t *out_total);
 
 /**
  * @brief Initialize the logging task (background flush and SD/file handling).

@@ -1,4 +1,5 @@
 #include "wifi_driver.h"
+#include "eldra_logging.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -46,14 +47,16 @@ static wifi_driver_status_t wifi_status = WIFI_STATUS_IDLE;
 static wifi_ap_record_t current_ap = {0};
 static esp_err_t last_err = ESP_OK;
 
-static esp_err_t scan_best_for_ssid(const char *ssid, wifi_ap_record_t *best_out)
+static esp_err_t run_scan(const uint8_t *ssid_filter, uint16_t *ap_num_out, wifi_ap_record_t **ap_records_out)
 {
-    if (!ssid || !best_out) {
+    if (!ap_num_out || !ap_records_out) {
         return ESP_ERR_INVALID_ARG;
     }
+    *ap_num_out = 0;
+    *ap_records_out = NULL;
 
     wifi_scan_config_t scan_cfg = {
-        .ssid = (uint8_t *)ssid,
+        .ssid = (uint8_t *)ssid_filter,
         .bssid = NULL,
         .channel = 0,
         .show_hidden = true,
@@ -65,6 +68,7 @@ static esp_err_t scan_best_for_ssid(const char *ssid, wifi_ap_record_t *best_out
     if (ap_num == 0) {
         return ESP_ERR_NOT_FOUND;
     }
+
     wifi_ap_record_t *ap_records = calloc(ap_num, sizeof(wifi_ap_record_t));
     if (!ap_records) {
         return ESP_ERR_NO_MEM;
@@ -72,6 +76,28 @@ static esp_err_t scan_best_for_ssid(const char *ssid, wifi_ap_record_t *best_out
     esp_err_t ret = esp_wifi_scan_get_ap_records(&ap_num, ap_records);
     if (ret != ESP_OK) {
         free(ap_records);
+        return ret;
+    }
+
+    *ap_num_out = ap_num;
+    *ap_records_out = ap_records;
+    return ESP_OK;
+}
+
+static esp_err_t scan_best_for_ssid(const char *ssid, wifi_ap_record_t *best_out)
+{
+    if (!ssid || !best_out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t ap_num = 0;
+    wifi_ap_record_t *ap_records = NULL;
+    esp_err_t ret = run_scan((const uint8_t *)ssid, &ap_num, &ap_records);
+    // Some APs can be missed with directed SSID scan; fall back to a full scan.
+    if (ret == ESP_ERR_NOT_FOUND) {
+        ret = run_scan(NULL, &ap_num, &ap_records);
+    }
+    if (ret != ESP_OK) {
         return ret;
     }
 
@@ -88,7 +114,7 @@ static esp_err_t scan_best_for_ssid(const char *ssid, wifi_ap_record_t *best_out
     }
     if (found) {
         *best_out = ap_records[best_idx];
-        ESP_LOGI(TAG, "Best for SSID \"%s\": RSSI=%d CH=%d BSSID=%02X:%02X:%02X:%02X:%02X:%02X",
+        EL_LOGI(TAG, "Best for SSID \"%s\": RSSI=%d CH=%d BSSID=%02X:%02X:%02X:%02X:%02X:%02X",
                  ssid, best_out->rssi, best_out->primary,
                  best_out->bssid[0], best_out->bssid[1], best_out->bssid[2],
                  best_out->bssid[3], best_out->bssid[4], best_out->bssid[5]);
@@ -121,7 +147,7 @@ static void roam_task(void *arg)
         }
 
         if (memcmp(best.bssid, current.bssid, 6) != 0 && best.rssi > current.rssi + roam_threshold_db) {
-            ESP_LOGI(TAG, "Roaming to stronger BSSID (old RSSI %d -> new RSSI %d)", current.rssi, best.rssi);
+            EL_LOGI(TAG, "Roaming to stronger BSSID (old RSSI %d -> new RSSI %d)", current.rssi, best.rssi);
             wifi_config_t cfg = {0};
             strlcpy((char *)cfg.sta.ssid, saved_ssid, sizeof(cfg.sta.ssid));
             strlcpy((char *)cfg.sta.password, saved_pass, sizeof(cfg.sta.password));
@@ -187,6 +213,13 @@ esp_err_t wifi_driver_init_sta(void)
     if (wifi_initialized) {
         return ESP_OK;
     }
+
+    // Reduce Wi-Fi/PHY noise before bring-up so connect bursts don't overwhelm UART.
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("phy", ESP_LOG_WARN);
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -216,7 +249,9 @@ esp_err_t wifi_driver_init_sta(void)
     esp_log_level_set("net80211", ESP_LOG_WARN);
 
     wifi_initialized = true;
-    ESP_LOGI(TAG, "WiFi STA initialized");
+    wifi_status = WIFI_STATUS_IDLE;
+    last_err = ESP_OK;
+    EL_LOGI(TAG, "WiFi STA initialized");
     return ESP_OK;
 }
 
@@ -238,7 +273,7 @@ esp_err_t wifi_driver_scan_and_log(uint16_t *ap_count_out)
         *ap_count_out = ap_num;
     }
 
-    ESP_LOGI(TAG, "Found %u APs", ap_num);
+    EL_LOGI(TAG, "Found %u APs", ap_num);
     if (ap_num == 0) {
         return ESP_OK;
     }
@@ -281,9 +316,9 @@ esp_err_t wifi_driver_scan_and_log(uint16_t *ap_count_out)
             qsort(entries, unique, sizeof(ssid_entry_t), cmp_ssid_entry);
         }
 
-        ESP_LOGI(TAG, "Found %u APs (%d unique SSIDs)", ap_num, unique);
+        EL_LOGI(TAG, "Found %u APs (%d unique SSIDs)", ap_num, unique);
         for (int i = 0; i < unique; i++) {
-            ESP_LOGI(TAG, "%2d: SSID=\"%s\" RSSI=%d CH=%d", i + 1, entries[i].ssid, entries[i].rssi, entries[i].channel);
+            EL_LOGI(TAG, "%2d: SSID=\"%s\" RSSI=%d CH=%d", i + 1, entries[i].ssid, entries[i].rssi, entries[i].channel);
         }
         free(entries);
     }
@@ -352,7 +387,7 @@ esp_err_t wifi_driver_connect_best_async(const char *ssid, const char *password)
         // already running
         return ESP_ERR_INVALID_STATE;
     }
-    BaseType_t ok = xTaskCreatePinnedToCore(connect_task, "wifi_connect", 4096, NULL, 3, &connect_task_handle, 1);
+    BaseType_t ok = xTaskCreatePinnedToCore(connect_task, "wifi_connect", 4096, NULL, 3, &connect_task_handle, 0);
     if (ok != pdPASS) {
         connect_task_handle = NULL;
         return ESP_ERR_NO_MEM;
@@ -362,6 +397,16 @@ esp_err_t wifi_driver_connect_best_async(const char *ssid, const char *password)
 
 esp_err_t wifi_driver_get_status(wifi_driver_status_t *status_out, wifi_ap_record_t *ap_out)
 {
+    if (!wifi_initialized) {
+        if (status_out) {
+            *status_out = WIFI_STATUS_IDLE;
+        }
+        if (ap_out) {
+            memset(ap_out, 0, sizeof(*ap_out));
+        }
+        return ESP_ERR_WIFI_NOT_INIT;
+    }
+
     if (status_out) {
         *status_out = wifi_status;
     }
@@ -471,3 +516,9 @@ bool wifi_driver_get_saved_credentials(char *ssid_out, size_t ssid_len, char *pa
     strlcpy(pass_out, saved_pass, pass_len);
     return true;
 }
+
+bool wifi_driver_is_initialized(void)
+{
+    return wifi_initialized;
+}
+

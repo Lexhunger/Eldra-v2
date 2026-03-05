@@ -10,7 +10,7 @@ Eldra's Emotion Engine keeps a set of bounded meters, resolves them into a named
 - **fear (0-100):** Spikes on edge detection/shake; decays passively.
 - **eldritch_charge (0-100):** Slow charge + shake boosts; gated by satiety/energy/battery before entering ELDRITCH.
 - **battery_percent (0-100):** Passed in from sensors; used to gate sleepy/eldritch.
-- Config knobs: `sleep.start_hour`/`sleep.end_hour` (default 22–8), `emotion.mood_log_interval_minutes` (default 20, 0=off).
+- Config knobs: `sleep.start_hour`/`sleep.end_hour` (default 22–8), `emotion.mood_log_interval_minutes` (default 5, 0=off).
 
 ## Named States
 - **NEUTRAL**
@@ -40,7 +40,7 @@ Eldra's Emotion Engine keeps a set of bounded meters, resolves them into a named
 ## Needs Mask and Affect
 - **Needs mask:** `emotion_get_needs()` returns bitflags (hungry, lonely, sleepy, scared, playful, eldritch-ready) for blending expressions without changing the hard state.
 - **Affect:** `emotion_get_affect(&valence,&arousal)` derives neutral/happy/sad/angry/excited plus signed valence/arousal for finer visual blending.
-- **Periodic logging:** meters + affect + needs are logged every `mood_log_interval_minutes` if enabled.
+- **Periodic logging:** meters + affect + needs are logged every `mood_log_interval_minutes` if enabled (default 5 min).
 
 ## Event API (hardware-agnostic)
 These entry points are called by other modules; they adjust meters, track timestamps, clear forced-sleep, and re-select state.

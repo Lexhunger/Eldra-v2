@@ -1,4 +1,5 @@
 #include "job_queue.h"
+#include "eldra_logging.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -24,7 +25,7 @@ static void job_worker(void *arg)
                 LCD_Clear(job.color);
                 break;
             default:
-                ESP_LOGW(TAG, "Unknown job type %d", job.type);
+                EL_LOGW(TAG, "Unknown job type %d", job.type);
                 break;
         }
     }
@@ -45,7 +46,7 @@ esp_err_t job_queue_init(void)
         job_q = NULL;
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "Job queue ready");
+    EL_LOGI(TAG, "Job queue ready");
     return ESP_OK;
 }
 
@@ -59,3 +60,4 @@ esp_err_t job_queue_enqueue(const job_t *job)
     }
     return ESP_OK;
 }
+

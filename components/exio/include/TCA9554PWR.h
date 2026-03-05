@@ -2,6 +2,7 @@
 
 
 #include <stdio.h>
+#include <stdbool.h>
 #include "driver/i2c.h"
 #include "esp_err.h"
 
@@ -49,3 +50,20 @@ void Set_Toggle(uint8_t Pin);                               // Flip the level of
 void TCA9554PWR_Init(uint8_t PinState);                     // Set the seven pins to PinState state, for example :PinState=0x23, 0010 0011 State (the highest bit is not used) (Output mode or input mode) 0= Output mode 1= Input mode. The default value is output mode
 
 esp_err_t EXIO_Init(void);
+
+/**
+ * @brief Mark LCD control lines (RESET/CS) as actively driven by the LCD driver.
+ *
+ * When enabled, non-LCD EXIO writes preserve current RESET/CS levels instead of
+ * forcing them high. This prevents unrelated EXIO updates from interrupting LCD
+ * reset/command windows.
+ */
+void EXIO_SetLCDControlActive(bool active);
+
+/**
+ * @brief Best-effort, silent helper that reasserts LCD RESET/CS high.
+ *
+ * Intended for shared-bus guards around SD/file I/O where logging recursion
+ * must be avoided. No-op until EXIO has been initialized.
+ */
+void EXIO_ForceLCDIdle(void);

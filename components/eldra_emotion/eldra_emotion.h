@@ -22,6 +22,7 @@ typedef enum {
     EMOTION_STATE_ELDRITCH,
     EMOTION_STATE_SCARED,
     EMOTION_STATE_DIZZY,
+    EMOTION_STATE_ANGRY,
 } emotion_state_t;
 
 /**
@@ -75,6 +76,8 @@ typedef struct {
     uint32_t eldritch_accum_ms;
     uint32_t last_interaction_ms;
     uint32_t last_mood_log_ms;
+    uint32_t dizzy_burst_window_start_ms;
+    uint8_t dizzy_burst_count;
 
     bool hood_closed;
 
@@ -83,6 +86,7 @@ typedef struct {
 
     bool scared_active;
     uint32_t scared_until_ms;
+    uint32_t angry_until_ms;
 
     emotion_need_mask_t active_needs;
     emotion_affect_t affect;
@@ -170,6 +174,16 @@ void emotion_on_hood_state_changed(emotion_context_t *ctx, bool hood_closed, uin
 void emotion_on_voice_command(emotion_context_t *ctx, uint32_t phrase_id, uint32_t now_ms);
 
 /**
+ * @brief Sensor hook: trigger a temporary angry window from non-social stimuli
+ *        (e.g., repeated bumps, rough motion, noisy environment, etc.).
+ * @param ctx Emotion context.
+ * @param intensity 0..100 rough irritation magnitude.
+ * @param duration_ms How long to hold anger-priority before normal evaluation resumes.
+ * @param now_ms Current monotonic time in milliseconds.
+ */
+void emotion_on_sensor_irritation(emotion_context_t *ctx, uint8_t intensity, uint32_t duration_ms, uint32_t now_ms);
+
+/**
  * @brief Retrieve the current emotional state.
  * @param ctx Emotion context.
  * @return Active emotion_state_t.
@@ -199,6 +213,19 @@ void emotion_force_sleep(emotion_context_t *ctx, bool enable, uint32_t now_ms);
  * @brief Configure mood log interval in minutes (0 disables periodic logs).
  */
 void emotion_set_mood_log_interval_minutes(uint32_t minutes);
+uint32_t emotion_get_mood_log_interval_ms(void);
+
+/**
+ * @brief Configure angry escalation policy.
+ * @param dizzy_count_threshold Trigger angry override when dizzy count in window exceeds this value.
+ * @param dizzy_window_ms Rolling window for dizzy counting.
+ * @param override_min_ms Minimum timed angry hold (ms) when escalation triggers.
+ * @param override_max_ms Maximum timed angry hold (ms) when escalation triggers.
+ */
+void emotion_set_angry_policy(uint8_t dizzy_count_threshold,
+                              uint32_t dizzy_window_ms,
+                              uint32_t override_min_ms,
+                              uint32_t override_max_ms);
 
 /**
  * @brief Weak hook invoked whenever the state changes. Higher layers override to drive eyes/haptics.

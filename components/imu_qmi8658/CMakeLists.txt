@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "qmi8658.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver freertos log exio
+    REQUIRES driver freertos log exio eldra_logging
 )
