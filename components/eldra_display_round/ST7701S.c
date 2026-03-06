@@ -356,21 +356,32 @@ void ST7701S_screen_init(ST7701S_handle St7701S_handle, unsigned char type)
     SPI_WriteData(0x00);   
     SPI_WriteData(0x00);   
     SPI_WriteData(0x00);   
+    }
+    #undef SPI_WriteComm
+    #undef SPI_WriteData
+}
 
-    SPI_WriteComm(0x11);     
-    Delay(120);                //ms
+// Wake/display-on sequence for ST7701S. Call this only after RGB clocks are
+// started by esp_lcd_panel_init().
+static void ST7701S_wake_sequence(ST7701S_handle St7701S_handle)
+{
+    #define SPI_WriteComm(cmd) ST7701S_WriteCommand(St7701S_handle, cmd)
+    #define SPI_WriteData(data) ST7701S_WriteData(St7701S_handle, data)
 
-    SPI_WriteComm(0x3A);    
-    SPI_WriteData(0x66);       // 0x66  /  0x77
+    SPI_WriteComm(0x11);
+    Delay(120); // required sleep-out settle time
 
-    SPI_WriteComm(0x36);     
-    SPI_WriteData(0x00);   
+    SPI_WriteComm(0x3A);
+    SPI_WriteData(0x66); // 0x66 / 0x77
 
-    SPI_WriteComm(0x35);     
-    SPI_WriteData(0x00);   
+    SPI_WriteComm(0x36);
+    SPI_WriteData(0x00);
+
+    SPI_WriteComm(0x35);
+    SPI_WriteData(0x00);
 
     SPI_WriteComm(0x29);
-    }
+
     #undef SPI_WriteComm
     #undef SPI_WriteData
 }
@@ -556,7 +567,9 @@ esp_err_t LCD_Init(void)
         }
     }
     
+    // Phase 1: register configuration while panel is still asleep.
     ST7701S_screen_init(s_st7701s, 1);
+    ST7701S_CS_Dis();
 #if CONFIG_EXAMPLE_AVOID_TEAR_EFFECT_WITH_SEM
     EL_LOGI(LCD_TAG, "Create semaphores");
     sem_vsync_end = xSemaphoreCreateBinary();
@@ -619,6 +632,11 @@ esp_err_t LCD_Init(void)
     EL_LOGI(LCD_TAG, "Initialize RGB LCD panel");
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    vTaskDelay(pdMS_TO_TICKS(50));
+    // Phase 2: wake after RGB clocks are stable.
+    ST7701S_CS_EN();
+    ST7701S_wake_sequence(s_st7701s);
+    ST7701S_CS_Dis();
     // Force deterministic panel coordinate/orientation state every bring-up.
     esp_err_t norm_ret = ST7701S_apply_runtime_panel_defaults();
     if (norm_ret != ESP_OK && norm_ret != ESP_ERR_NOT_SUPPORTED) {
@@ -634,7 +652,6 @@ esp_err_t LCD_Init(void)
         gpio_set_direction(EXAMPLE_PIN_NUM_DISP_EN, GPIO_MODE_OUTPUT);
         gpio_set_level(EXAMPLE_PIN_NUM_DISP_EN, 1);
     }
-    ST7701S_CS_Dis();
     Backlight_Init();
     return ESP_OK;
 }
@@ -721,6 +738,8 @@ esp_err_t ST7701S_reinit_sequence(void)
     ST7701S_CS_EN();
     vTaskDelay(pdMS_TO_TICKS(100));
     ST7701S_screen_init(s_st7701s, 1);
+    ST7701S_wake_sequence(s_st7701s);
+    ST7701S_CS_Dis();
     return ESP_OK;
 }
 
