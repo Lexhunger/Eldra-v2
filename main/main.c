@@ -1187,7 +1187,8 @@ void app_main(void) {
         eldra_display_round_diag_t dguard = {0};
         eldra_display_round_get_diag(&dguard);
         uint32_t blit_now = g_display_blit_ok_count;
-        if (!dguard.panel_ready || dguard.panel_sleeping || dguard.reinit_in_progress) {
+        bool sleep_active_guard = eldra_sleep_is_active();
+        if (sleep_active_guard || !dguard.panel_ready || dguard.panel_sleeping || dguard.reinit_in_progress) {
             blit_watch_last_ok = blit_now;
             blit_watch_since_ms = now_ms;
         } else if (blit_now != blit_watch_last_ok) {
