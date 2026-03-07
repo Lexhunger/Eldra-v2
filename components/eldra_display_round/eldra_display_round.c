@@ -198,7 +198,6 @@ esp_err_t eldra_display_round_reset_panel(void)
 
     // Give RGB timings/panel a short settle window before accepting blits.
     vTaskDelay(pdMS_TO_TICKS(80));
-    Set_Backlight(90);
 
     s_panel_ready = true;
     s_reinit_in_progress = false;
@@ -318,6 +317,13 @@ esp_err_t eldra_display_round_blit(const uint16_t *framebuffer, int width, int h
         s_logged_ready = true;
         s_panel_ready_stamp_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
         EL_LOGI(TAG, "Panel first successful blit (ready, failures=%u)", s_panel_failures);
+        esp_err_t restart_ret = esp_lcd_rgb_panel_restart(panel_handle);
+        if (restart_ret == ESP_OK) {
+            EL_LOGI(TAG, "RGB startup phase-lock restart requested");
+        } else if (restart_ret != ESP_ERR_INVALID_STATE) {
+            EL_LOGW(TAG, "RGB startup phase-lock restart failed: %s", esp_err_to_name(restart_ret));
+        }
+        Set_Backlight(90);
         s_panel_failures = 0;
     }
     if (err == ESP_OK) {

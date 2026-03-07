@@ -620,7 +620,7 @@ esp_err_t LCD_Init(void)
             .vsync_back_porch = 18,
             .vsync_front_porch = 8,
             .vsync_pulse_width = 2,
-            .flags.pclk_active_neg = false,
+            .flags.pclk_active_neg = true,
         },
         .flags.fb_in_psram = true, // allocate frame buffer in PSRAM
     };
@@ -653,6 +653,8 @@ esp_err_t LCD_Init(void)
         gpio_set_level(EXAMPLE_PIN_NUM_DISP_EN, 1);
     }
     Backlight_Init();
+    // Keep backlight dark until first confirmed frame is presented.
+    Set_Backlight(0);
     return ESP_OK;
 }
 
