@@ -37,6 +37,18 @@ typedef enum {
 } emotion_affect_t;
 
 /**
+ * @brief Runtime affect weighting (percent; 100 = default behavior).
+ * These weights influence derived valence/arousal and affect classification.
+ */
+typedef struct {
+    uint16_t happiness_pct;
+    uint16_t satiety_pct;
+    uint16_t energy_pct;
+    uint16_t social_pct;
+    uint16_t fear_pct;
+} emotion_affect_weights_t;
+
+/**
  * @brief Bitmask of concurrent needs/modifiers so renderers can blend (not just pick one state).
  */
 typedef enum {
@@ -202,6 +214,8 @@ emotion_need_mask_t emotion_get_needs(const emotion_context_t *ctx);
  * @param arousal_out Optional: signed arousal score (-100..100).
  */
 emotion_affect_t emotion_get_affect(const emotion_context_t *ctx, int8_t *valence_out, int8_t *arousal_out);
+void emotion_set_affect_weights(const emotion_affect_weights_t *weights);
+void emotion_get_affect_weights(emotion_affect_weights_t *out_weights);
 
 /**
  * @brief Configure quiet-hour sleep window (start>=0,end<=23).

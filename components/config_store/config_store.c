@@ -71,6 +71,11 @@ void config_store_get_defaults(config_store_t *out)
     out->sleep_global_inactivity_ms = 1800000; // 30 minutes
     out->sleep_overfed_hold_ms = 120000;       // 2 minutes
     out->mood_log_interval_minutes = 5; // log meters every 5 minutes by default (0=off)
+    out->affect_weight_happiness_pct = 100;
+    out->affect_weight_satiety_pct = 100;
+    out->affect_weight_energy_pct = 100;
+    out->affect_weight_social_pct = 100;
+    out->affect_weight_fear_pct = 100;
     out->angry_dizzy_count_threshold = 3;
     out->angry_dizzy_window_ms = 300000; // 5 minutes
     out->angry_override_min_ms = 120000; // 2 minutes
@@ -309,11 +314,21 @@ esp_err_t config_store_load(config_store_t *out)
     cJSON *emotion = cJSON_GetObjectItem(root, "emotion");
     if (cJSON_IsObject(emotion)) {
         if (!cJSON_HasObjectItem(emotion, "mood_log_interval_minutes")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_happiness_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_satiety_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_energy_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_social_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_fear_pct")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_dizzy_count_threshold")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_dizzy_window_ms")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_override_min_ms")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_override_max_ms")) updated = true;
         json_apply_int(emotion, "mood_log_interval_minutes", &out->mood_log_interval_minutes);
+        json_apply_int(emotion, "affect_weight_happiness_pct", &out->affect_weight_happiness_pct);
+        json_apply_int(emotion, "affect_weight_satiety_pct", &out->affect_weight_satiety_pct);
+        json_apply_int(emotion, "affect_weight_energy_pct", &out->affect_weight_energy_pct);
+        json_apply_int(emotion, "affect_weight_social_pct", &out->affect_weight_social_pct);
+        json_apply_int(emotion, "affect_weight_fear_pct", &out->affect_weight_fear_pct);
         json_apply_int(emotion, "angry_dizzy_count_threshold", &out->angry_dizzy_count_threshold);
         json_apply_int(emotion, "angry_dizzy_window_ms", &out->angry_dizzy_window_ms);
         json_apply_int(emotion, "angry_override_min_ms", &out->angry_override_min_ms);
@@ -383,6 +398,11 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON *emotion = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "emotion", emotion);
     cJSON_AddNumberToObject(emotion, "mood_log_interval_minutes", cfg->mood_log_interval_minutes);
+    cJSON_AddNumberToObject(emotion, "affect_weight_happiness_pct", cfg->affect_weight_happiness_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_satiety_pct", cfg->affect_weight_satiety_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_energy_pct", cfg->affect_weight_energy_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_social_pct", cfg->affect_weight_social_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_fear_pct", cfg->affect_weight_fear_pct);
     cJSON_AddNumberToObject(emotion, "angry_dizzy_count_threshold", cfg->angry_dizzy_count_threshold);
     cJSON_AddNumberToObject(emotion, "angry_dizzy_window_ms", cfg->angry_dizzy_window_ms);
     cJSON_AddNumberToObject(emotion, "angry_override_min_ms", cfg->angry_override_min_ms);

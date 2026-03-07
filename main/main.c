@@ -37,6 +37,7 @@
 #include "esp_event.h"
 #include "driver/gpio.h"
 #include "esp_system.h"
+#include "nvs.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -51,6 +52,8 @@ static bool g_cloud_ready = false;
 static volatile bool g_force_render_now = false;
 static volatile bool g_panel_ready_seen = false;
 static volatile bool g_sleep_lid_heavy = false;
+// Test override for sleep-eye visuals: 0=off, 1=light sleepy lid, 2=heavy sleepy lid.
+static volatile uint8_t g_sleep_eye_override = 0;
 static uint64_t g_last_cloud_state_push_ms = 0;
 static bool sntp_started = false;
 static volatile bool g_has_ip = false;
@@ -91,7 +94,9 @@ static const uint32_t k_heartbeat_interval_ms = 5000;
 static const bool k_enable_heartbeat = false;
 static const uint32_t k_mood_save_interval_ms = 0; // disabled: runtime SD writes can disturb display
 static const uint32_t k_time_persist_interval_ms = 0; // disabled: runtime RTC/NVS writes can disturb display
-static const bool k_force_runtime_sd_logging_off = true; // diagnostic: eliminate SD writes during active runtime
+// Display path is currently stable again; allow SD logging per config.
+// Set true only for temporary isolation diagnostics.
+static const bool k_force_runtime_sd_logging_off = false;
 static const uint32_t k_display_probe_interval_ms = 5000;
 static const int k_display_probe_jump_px = 24;
 static config_store_t g_cfg_current = {0};
@@ -758,24 +763,53 @@ static void save_mood_to_config(void)
     (void)config_store_save(&cfg);
 }
 
-static void rtc_restore_task(void *arg)
+static void rtc_restore_early(void)
 {
-    (void)arg;
-    esp_err_t rtc_restore = rtc_driver_restore_persisted();
+    const uint32_t k_rtc_restore_timeout_ms = 1200;
+    const uint32_t k_rtc_restore_retry_ms = 50;
+    const uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    uint32_t attempts = 0;
+    esp_err_t rtc_restore = ESP_FAIL;
+
+    EL_LOGI(TAG, "Boot stage: rtc restore begin");
+    while (1) {
+        attempts++;
+        rtc_restore = rtc_driver_restore_persisted();
+        if (rtc_restore == ESP_OK ||
+            rtc_restore == ESP_ERR_NVS_NOT_FOUND ||
+            rtc_restore == ESP_ERR_INVALID_RESPONSE ||
+            rtc_restore == ESP_ERR_INVALID_STATE) {
+            break;
+        }
+
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        if ((now_ms - start_ms) >= k_rtc_restore_timeout_ms) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(k_rtc_restore_retry_ms));
+    }
+
     if (rtc_restore == ESP_OK) {
         EL_LOGI(TAG, "System time restored from persisted RTC snapshot");
     } else {
         // Informational only: missing/invalid persisted time is expected on
         // first boot or after a storage reset.
-        EL_LOGI(TAG, "RTC restore skipped: %s", esp_err_to_name(rtc_restore));
+        EL_LOGI(TAG, "RTC restore skipped: %s (attempts=%u)",
+                esp_err_to_name(rtc_restore), (unsigned)attempts);
     }
-    vTaskDelete(NULL);
+    EL_LOGI(TAG, "Boot stage: rtc restore done");
 }
 
 void app_main(void) {
     log_init();
     log_set_console_level(LOG_LEVEL_INFO);
     esp_log_level_set("*", ESP_LOG_INFO);
+    // The project still uses legacy I2C driver paths for EXIO/IMU/RTC.
+    // Suppress the one-time migration warning noise; keep real I2C errors.
+    esp_log_level_set("i2c", ESP_LOG_ERROR);
+    // Configure timezone early so pre-network logs render in local time.
+    setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
+    tzset();
     EL_LOGI(TAG, "app_main start");
     esp_reset_reason_t rr = esp_reset_reason();
     EL_LOGI(TAG, "Reset reason: %s (%d)", reset_reason_name(rr), (int)rr);
@@ -785,6 +819,8 @@ void app_main(void) {
         goto fail_safe;
     }
     EL_LOGI(TAG, "Sensors init complete");
+    // Restore RTC/NVS time early, but only after shared sensor I2C/EXIO setup.
+    rtc_restore_early();
 
     // Small settle to let rails stabilize before the LCD pulls current.
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -807,8 +843,6 @@ void app_main(void) {
     }
     (void)esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_ip_acquired, NULL);
     (void)esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &on_wifi_disconnect, NULL);
-    setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1);
-    tzset();
     EL_LOGI(TAG, "Boot stage: netif/event init done");
 
     comms_init();
@@ -881,10 +915,20 @@ void app_main(void) {
     int raw_glyph_y = cfg.glyph_offset_y;
     int raw_sleep_lid_depth = cfg.sleep_lid_depth;
     int raw_angry_lid_depth = cfg.angry_lid_depth;
+    int raw_affect_happy = cfg.affect_weight_happiness_pct;
+    int raw_affect_satiety = cfg.affect_weight_satiety_pct;
+    int raw_affect_energy = cfg.affect_weight_energy_pct;
+    int raw_affect_social = cfg.affect_weight_social_pct;
+    int raw_affect_fear = cfg.affect_weight_fear_pct;
     cfg.glyph_offset_x = clamp_int(cfg.glyph_offset_x, -400, 400);
     cfg.glyph_offset_y = clamp_int(cfg.glyph_offset_y, -400, 400);
     cfg.sleep_lid_depth = clamp_int(cfg.sleep_lid_depth, 0, 6);
     cfg.angry_lid_depth = clamp_int(cfg.angry_lid_depth, 0, 6);
+    cfg.affect_weight_happiness_pct = clamp_int(cfg.affect_weight_happiness_pct, 0, 300);
+    cfg.affect_weight_satiety_pct = clamp_int(cfg.affect_weight_satiety_pct, 0, 300);
+    cfg.affect_weight_energy_pct = clamp_int(cfg.affect_weight_energy_pct, 0, 300);
+    cfg.affect_weight_social_pct = clamp_int(cfg.affect_weight_social_pct, 0, 300);
+    cfg.affect_weight_fear_pct = clamp_int(cfg.affect_weight_fear_pct, 0, 300);
     if (cfg_loaded && (cfg.glyph_offset_x != raw_glyph_x || cfg.glyph_offset_y != raw_glyph_y)) {
         (void)config_store_save(&cfg);
         EL_LOGW(TAG, "Clamped persisted glyph offsets (%d,%d) -> (%d,%d)",
@@ -896,6 +940,28 @@ void app_main(void) {
                 raw_sleep_lid_depth, cfg.sleep_lid_depth,
                 raw_angry_lid_depth, cfg.angry_lid_depth);
     }
+    if (cfg_loaded &&
+        (cfg.affect_weight_happiness_pct != raw_affect_happy ||
+         cfg.affect_weight_satiety_pct != raw_affect_satiety ||
+         cfg.affect_weight_energy_pct != raw_affect_energy ||
+         cfg.affect_weight_social_pct != raw_affect_social ||
+         cfg.affect_weight_fear_pct != raw_affect_fear)) {
+        (void)config_store_save(&cfg);
+        EL_LOGW(TAG, "Clamped persisted affect weights h=%d->%d sat=%d->%d e=%d->%d s=%d->%d f=%d->%d",
+                raw_affect_happy, cfg.affect_weight_happiness_pct,
+                raw_affect_satiety, cfg.affect_weight_satiety_pct,
+                raw_affect_energy, cfg.affect_weight_energy_pct,
+                raw_affect_social, cfg.affect_weight_social_pct,
+                raw_affect_fear, cfg.affect_weight_fear_pct);
+    }
+    emotion_affect_weights_t affect_w = {
+        .happiness_pct = (uint16_t)cfg.affect_weight_happiness_pct,
+        .satiety_pct = (uint16_t)cfg.affect_weight_satiety_pct,
+        .energy_pct = (uint16_t)cfg.affect_weight_energy_pct,
+        .social_pct = (uint16_t)cfg.affect_weight_social_pct,
+        .fear_pct = (uint16_t)cfg.affect_weight_fear_pct,
+    };
+    emotion_set_affect_weights(&affect_w);
     g_last_mood_save_ms = (uint64_t)start_ms;
     g_last_time_persist_ms = (uint64_t)start_ms;
     g_cfg_current = cfg; // stash for later event reapplication
@@ -1048,11 +1114,6 @@ void app_main(void) {
     EL_LOGI(TAG, "Display task started");
     EL_LOGW(TAG, "App-level watchdog/monitor disabled by request");
 
-    // Restore persisted RTC time asynchronously so boot cannot block on I2C/NVS.
-    if (xTaskCreate(rtc_restore_task, "rtc_restore", 3072, NULL, 2, NULL) != pdPASS) {
-        EL_LOGW(TAG, "RTC restore task create failed");
-    }
-
     uint64_t last_us = esp_timer_get_time();
     uint32_t last_heartbeat_ms = (uint32_t)(last_us / 1000ULL);
     uint32_t blit_watch_last_ok = g_display_blit_ok_count;
@@ -1150,6 +1211,10 @@ void app_main(void) {
             comms_process_all_pending(&g_emotion, now_ms);
             eldra_eyes_mood_t desired = mood_for_state(g_emotion.current_state);
             uint32_t desired_mods = eye_modifiers_for_needs(emotion_get_needs(&g_emotion));
+            uint8_t sleep_eye_override = g_sleep_eye_override;
+            if (sleep_eye_override != 0U) {
+                desired_mods |= ELDRA_EYES_MOD_SLEEPY;
+            }
             if (eyes_lock_take(pdMS_TO_TICKS(2))) {
                 if (eldra_eyes_get_mood(eyes_ctx) != desired) {
                     eldra_eyes_set_mood(eyes_ctx, desired);
@@ -1218,7 +1283,14 @@ void app_main(void) {
         // the final 60 seconds before sleep shutdown stage.
         uint32_t sleep_eta_ms = 0;
         bool sleep_countdown_active = eldra_sleep_get_shutdown_eta_ms(now_ms, &sleep_eta_ms);
-        g_sleep_lid_heavy = sleep_countdown_active && (sleep_eta_ms <= 60000U);
+        uint8_t sleep_eye_override = g_sleep_eye_override;
+        if (sleep_eye_override == 2U) {
+            g_sleep_lid_heavy = true;
+        } else if (sleep_eye_override == 1U) {
+            g_sleep_lid_heavy = false;
+        } else {
+            g_sleep_lid_heavy = sleep_countdown_active && (sleep_eta_ms <= 60000U);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS pacing
     }
@@ -1233,4 +1305,20 @@ fail_safe:
 void eldra_request_render_now(void)
 {
     g_force_render_now = true;
+}
+
+// External hook used by console commands to force sleepy-eye visuals for testing
+// without triggering actual sleep transitions.
+void eldra_set_sleep_eye_override(uint8_t mode)
+{
+    if (mode > 2U) {
+        mode = 2U;
+    }
+    g_sleep_eye_override = mode;
+    g_force_render_now = true;
+}
+
+uint8_t eldra_get_sleep_eye_override(void)
+{
+    return g_sleep_eye_override;
 }

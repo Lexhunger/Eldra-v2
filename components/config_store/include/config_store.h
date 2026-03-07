@@ -35,6 +35,11 @@ typedef struct {
     int sleep_global_inactivity_ms; // any-time inactivity before auto sleep
     int sleep_overfed_hold_ms;      // overfed+sleepy hold before auto sleep
     int mood_log_interval_minutes; // 0 = disable, otherwise minutes between emotion logs
+    int affect_weight_happiness_pct; // 0..300 (100=default)
+    int affect_weight_satiety_pct;   // 0..300 (100=default)
+    int affect_weight_energy_pct;    // 0..300 (100=default)
+    int affect_weight_social_pct;    // 0..300 (100=default)
+    int affect_weight_fear_pct;      // 0..300 (100=default)
     int angry_dizzy_count_threshold; // trigger angry when dizzy count in window exceeds this
     int angry_dizzy_window_ms;       // rolling dizzy burst window in ms
     int angry_override_min_ms;       // timed angry hold minimum in ms

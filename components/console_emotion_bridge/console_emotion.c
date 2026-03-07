@@ -14,6 +14,36 @@
 static const char *TAG = "console_emotion";
 static emotion_context_t *s_ctx = NULL;
 
+void eldra_request_render_now(void) __attribute__((weak));
+void eldra_set_sleep_eye_override(uint8_t mode) __attribute__((weak));
+uint8_t eldra_get_sleep_eye_override(void) __attribute__((weak));
+
+static int clamp_meter(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int clamp_weight_pct(int v)
+{
+    if (v < 0) return 0;
+    if (v > 300) return 300;
+    return v;
+}
+
+static void print_affect_weights(void)
+{
+    emotion_affect_weights_t w = {0};
+    emotion_get_affect_weights(&w);
+    printf("Affect weights (pct): happy=%u satiety=%u energy=%u social=%u fear=%u\n",
+           (unsigned)w.happiness_pct,
+           (unsigned)w.satiety_pct,
+           (unsigned)w.energy_pct,
+           (unsigned)w.social_pct,
+           (unsigned)w.fear_pct);
+}
+
 static const char *state_name(emotion_state_t st)
 {
     switch (st) {
@@ -179,6 +209,168 @@ static int cmd_log_interval(int argc, char **argv)
         (void)config_store_save(&cfg);
     }
     printf("Mood log interval set to %d minute(s)%s\n", minutes, minutes == 0 ? " (disabled)" : "");
+    return 0;
+}
+
+static int cmd_emo_set(int argc, char **argv)
+{
+    if (!s_ctx) {
+        printf("Emotion context not available\n");
+        return 0;
+    }
+    if (argc < 3) {
+        printf("Usage: emo_set <happy|satiety|energy|social|fear|eldritch|battery> <value>\n");
+        printf("   or: emo_set all <happy> <satiety> <energy> <social> <fear> <eldritch> [battery]\n");
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "all") == 0) {
+        if (argc < 8) {
+            printf("Usage: emo_set all <happy> <satiety> <energy> <social> <fear> <eldritch> [battery]\n");
+            return 0;
+        }
+        s_ctx->happiness = (uint8_t)clamp_meter((int)strtol(argv[2], NULL, 10), 0, 100);
+        s_ctx->hunger = (uint8_t)clamp_meter((int)strtol(argv[3], NULL, 10), 0, 130);
+        s_ctx->energy = (uint8_t)clamp_meter((int)strtol(argv[4], NULL, 10), 0, 100);
+        s_ctx->social = (uint8_t)clamp_meter((int)strtol(argv[5], NULL, 10), 0, 100);
+        s_ctx->fear = (uint8_t)clamp_meter((int)strtol(argv[6], NULL, 10), 0, 100);
+        s_ctx->eldritch_charge = (uint8_t)clamp_meter((int)strtol(argv[7], NULL, 10), 0, 100);
+        if (argc >= 9) {
+            emotion_set_battery_percent(s_ctx, (uint8_t)clamp_meter((int)strtol(argv[8], NULL, 10), 0, 100));
+        }
+    } else {
+        int value = (int)strtol(argv[2], NULL, 10);
+        if (strcasecmp(argv[1], "happy") == 0 || strcasecmp(argv[1], "happiness") == 0) {
+            s_ctx->happiness = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "sat") == 0 || strcasecmp(argv[1], "satiety") == 0 ||
+                   strcasecmp(argv[1], "hunger") == 0) {
+            s_ctx->hunger = (uint8_t)clamp_meter(value, 0, 130);
+        } else if (strcasecmp(argv[1], "energy") == 0) {
+            s_ctx->energy = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "social") == 0) {
+            s_ctx->social = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "fear") == 0) {
+            s_ctx->fear = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "eld") == 0 || strcasecmp(argv[1], "eldritch") == 0) {
+            s_ctx->eldritch_charge = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "batt") == 0 || strcasecmp(argv[1], "battery") == 0) {
+            emotion_set_battery_percent(s_ctx, (uint8_t)clamp_meter(value, 0, 100));
+        } else {
+            printf("Unknown meter '%s'\n", argv[1]);
+            return 0;
+        }
+    }
+
+    if (eldra_request_render_now) {
+        eldra_request_render_now();
+    }
+
+    printf("Meters set: happy=%u satiety=%u energy=%u social=%u fear=%u eldritch=%u batt=%u%%\n",
+           s_ctx->happiness, s_ctx->hunger, s_ctx->energy, s_ctx->social,
+           s_ctx->fear, s_ctx->eldritch_charge, s_ctx->battery_percent);
+    return 0;
+}
+
+static int cmd_eyes_sleep_force(int argc, char **argv)
+{
+    if (!eldra_set_sleep_eye_override) {
+        printf("Sleep-eye override hook unavailable in this build\n");
+        return 0;
+    }
+
+    uint8_t current = 0;
+    if (eldra_get_sleep_eye_override) {
+        current = eldra_get_sleep_eye_override();
+    }
+
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        const char *name = (current == 0U) ? "off" : (current == 1U) ? "light" : "heavy";
+        printf("Sleep-eye override: %s (%u)\n", name, (unsigned)current);
+        printf("Usage: eyes_sleep_force <off|light|heavy|status>\n");
+        return 0;
+    }
+
+    uint8_t mode = current;
+    if (strcasecmp(argv[1], "off") == 0 || strcmp(argv[1], "0") == 0) {
+        mode = 0U;
+    } else if (strcasecmp(argv[1], "light") == 0 || strcasecmp(argv[1], "on") == 0 || strcmp(argv[1], "1") == 0) {
+        mode = 1U;
+    } else if (strcasecmp(argv[1], "heavy") == 0 || strcmp(argv[1], "2") == 0) {
+        mode = 2U;
+    } else {
+        printf("Usage: eyes_sleep_force <off|light|heavy|status>\n");
+        return 0;
+    }
+
+    eldra_set_sleep_eye_override(mode);
+    const char *name = (mode == 0U) ? "off" : (mode == 1U) ? "light" : "heavy";
+    printf("Sleep-eye override set: %s (%u)\n", name, (unsigned)mode);
+    return 0;
+}
+
+static int cmd_emo_weight(int argc, char **argv)
+{
+    emotion_affect_weights_t w = {0};
+    emotion_get_affect_weights(&w);
+
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        print_affect_weights();
+        printf("Usage: emo_weight <happy|satiety|energy|social|fear> <pct 0..300>\n");
+        printf("   or: emo_weight all <happy> <satiety> <energy> <social> <fear>\n");
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "all") == 0) {
+        if (argc < 7) {
+            printf("Usage: emo_weight all <happy> <satiety> <energy> <social> <fear>\n");
+            return 0;
+        }
+        w.happiness_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[2], NULL, 10));
+        w.satiety_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[3], NULL, 10));
+        w.energy_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[4], NULL, 10));
+        w.social_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[5], NULL, 10));
+        w.fear_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[6], NULL, 10));
+    } else {
+        if (argc < 3) {
+            printf("Usage: emo_weight <happy|satiety|energy|social|fear> <pct 0..300>\n");
+            return 0;
+        }
+        uint16_t value = (uint16_t)clamp_weight_pct((int)strtol(argv[2], NULL, 10));
+        if (strcasecmp(argv[1], "happy") == 0 || strcasecmp(argv[1], "happiness") == 0) {
+            w.happiness_pct = value;
+        } else if (strcasecmp(argv[1], "sat") == 0 || strcasecmp(argv[1], "satiety") == 0 ||
+                   strcasecmp(argv[1], "hunger") == 0) {
+            w.satiety_pct = value;
+        } else if (strcasecmp(argv[1], "energy") == 0) {
+            w.energy_pct = value;
+        } else if (strcasecmp(argv[1], "social") == 0) {
+            w.social_pct = value;
+        } else if (strcasecmp(argv[1], "fear") == 0) {
+            w.fear_pct = value;
+        } else {
+            printf("Unknown target '%s'\n", argv[1]);
+            return 0;
+        }
+    }
+
+    emotion_set_affect_weights(&w);
+    config_store_t cfg = {0};
+    if (config_store_load(&cfg) == ESP_OK) {
+        cfg.affect_weight_happiness_pct = (int)w.happiness_pct;
+        cfg.affect_weight_satiety_pct = (int)w.satiety_pct;
+        cfg.affect_weight_energy_pct = (int)w.energy_pct;
+        cfg.affect_weight_social_pct = (int)w.social_pct;
+        cfg.affect_weight_fear_pct = (int)w.fear_pct;
+        if (config_store_save(&cfg) != ESP_OK) {
+            printf("Affect weights applied (persist failed)\n");
+        }
+    } else {
+        printf("Affect weights applied (config load failed; not persisted)\n");
+    }
+    if (eldra_request_render_now) {
+        eldra_request_render_now();
+    }
+    print_affect_weights();
     return 0;
 }
 
@@ -415,6 +607,22 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&logint_cmd), TAG, "register emo_log_interval failed");
 
+    const esp_console_cmd_t meter_set_cmd = {
+        .command = "emo_set",
+        .help = "Set emotion meters for testing. Usage: emo_set <meter> <value> | emo_set all <h sat e s f eld> [batt]",
+        .hint = NULL,
+        .func = &cmd_emo_set,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&meter_set_cmd), TAG, "register emo_set failed");
+
+    const esp_console_cmd_t weight_set_cmd = {
+        .command = "emo_weight",
+        .help = "Set affect weights (pct; 100=default). Usage: emo_weight <target> <pct> | emo_weight all <h sat e s f> | emo_weight status",
+        .hint = NULL,
+        .func = &cmd_emo_weight,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&weight_set_cmd), TAG, "register emo_weight failed");
+
     const esp_console_cmd_t offset_cmd = {
         .command = "eyes_offset",
         .help = "Set eye center offset in pixels (persists by default). Usage: eyes_offset <x> <y> [persist|temp] (positive=right/down)",
@@ -438,6 +646,14 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
         .func = &cmd_eyes_lid,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&lid_cmd), TAG, "register eyes_lid failed");
+
+    const esp_console_cmd_t sleep_force_cmd = {
+        .command = "eyes_sleep_force",
+        .help = "Force sleepy-eye overlay without entering sleep. Usage: eyes_sleep_force <off|light|heavy|status>",
+        .hint = NULL,
+        .func = &cmd_eyes_sleep_force,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&sleep_force_cmd), TAG, "register eyes_sleep_force failed");
 
     const esp_console_cmd_t disp_center_cmd = {
         .command = "disp_center",

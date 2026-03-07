@@ -27,6 +27,7 @@ typedef enum {
 
 static bool s_sleeping = false;
 static bool s_power_stage_done = false;
+static bool s_visual_stage_done = false;
 static bool s_panel_sleep_applied = false;
 static bool s_panel_shutdown_attempted = false;
 static uint64_t s_shutdown_time_ms = 0;
@@ -44,8 +45,8 @@ static uint8_t s_sleep_end_hour = 8;
 static QueueHandle_t s_msg_q = NULL;
 static SemaphoreHandle_t s_state_lock = NULL;
 
-static const uint32_t k_shutdown_min_ms = 120000;          // 2 minutes
-static const uint32_t k_shutdown_jitter_ms = 180000;       // +0..3 minutes
+static const uint32_t k_shutdown_staging_ms = 900000;      // 15 minutes
+static const uint32_t k_sleep_visual_lead_ms = 60000;      // final 60 seconds
 static const uint8_t k_backlight_awake = 90;
 static const uint8_t k_backlight_sleep_visual = 30;
 // Temporary stability mode: keep the panel streaming and only gate backlight
@@ -179,6 +180,10 @@ static void sleep_worker_task(void *arg)
                     break;
                 }
                 EL_LOGI(TAG, "Sleep stage: visual");
+                if (s_emotion) {
+                    uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+                    emotion_force_sleep(s_emotion, true, now_ms);
+                }
                 eldra_display_round_set_backlight(k_backlight_sleep_visual);
                 break;
 
@@ -323,6 +328,7 @@ void eldra_sleep_init(emotion_context_t *ctx)
     s_overfed_sleepy_since_ms = 0;
     s_motion_qualify_since_ms = 0;
     s_last_seen_interaction_ms = (ctx != NULL) ? ctx->last_interaction_ms : 0;
+    s_visual_stage_done = false;
     s_panel_sleep_applied = false;
     s_panel_shutdown_attempted = false;
     EL_LOGI(TAG, "sleep subsystem ready");
@@ -371,7 +377,7 @@ void eldra_sleep_sleep_now(void)
 
 static void sleep_now_internal(bool reason_window)
 {
-    uint32_t delay_ms = k_shutdown_min_ms + (esp_random() % k_shutdown_jitter_ms);
+    uint32_t delay_ms = k_shutdown_staging_ms;
     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     if (s_state_lock) {
@@ -387,6 +393,7 @@ static void sleep_now_internal(bool reason_window)
     s_shutdown_time_ms = now_ms + delay_ms;
     s_sleeping = true;
     s_power_stage_done = false;
+    s_visual_stage_done = false;
     s_panel_sleep_applied = false;
     s_panel_shutdown_attempted = false;
     s_sleep_reason_window = reason_window;
@@ -400,11 +407,7 @@ static void sleep_now_internal(bool reason_window)
     if (s_glyph_inited) {
         eldra_glyphs_show(GLYPH_SLEEP, 0);
     }
-    if (s_emotion) {
-        emotion_force_sleep(s_emotion, true, now_ms);
-    }
     drain_sleep_queue();
-    post_sleep_msg(SLEEP_MSG_VISUAL);
 
     EL_LOGI(TAG, "Sleep requested; shutdown staging in %u ms", delay_ms);
 }
@@ -418,6 +421,7 @@ void eldra_sleep_wake_now(void)
     }
     s_sleeping = false;
     s_power_stage_done = false;
+    s_visual_stage_done = false;
     s_shutdown_time_ms = 0;
     s_last_activity_ms = now_ms;
     s_sleep_started_ms = 0;
@@ -465,12 +469,14 @@ void eldra_sleep_tick(uint64_t now_ms)
 {
     bool sleeping = false;
     bool power_stage_done = false;
+    bool visual_stage_done = false;
     uint64_t shutdown_at_ms = 0;
 
     if (s_state_lock) {
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         sleeping = s_sleeping;
         power_stage_done = s_power_stage_done;
+        visual_stage_done = s_visual_stage_done;
         shutdown_at_ms = s_shutdown_time_ms;
         xSemaphoreGive(s_state_lock);
     }
@@ -584,6 +590,29 @@ void eldra_sleep_tick(uint64_t now_ms)
             EL_LOGI(TAG, "Wake condition: sleep window ended at hour=%d", local_hour);
             eldra_sleep_wake_now();
             return;
+        }
+    }
+
+    if (!visual_stage_done && shutdown_at_ms > 0) {
+        uint32_t remaining_ms = 0;
+        if (shutdown_at_ms > now_ms) {
+            uint64_t rem64 = shutdown_at_ms - now_ms;
+            remaining_ms = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (uint32_t)rem64;
+        }
+        if (remaining_ms <= k_sleep_visual_lead_ms) {
+            bool enter_visual = false;
+            if (s_state_lock) {
+                xSemaphoreTake(s_state_lock, portMAX_DELAY);
+                if (s_sleeping && !s_visual_stage_done) {
+                    s_visual_stage_done = true;
+                    enter_visual = true;
+                }
+                xSemaphoreGive(s_state_lock);
+            }
+            if (enter_visual) {
+                post_sleep_msg(SLEEP_MSG_VISUAL);
+                EL_LOGI(TAG, "Sleep visual countdown reached (%u ms to shutdown)", (unsigned)remaining_ms);
+            }
         }
     }
 

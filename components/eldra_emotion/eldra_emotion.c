@@ -121,6 +121,22 @@ static uint32_t s_angry_override_max_ms = 5 * 60 * 1000U; // 5 minutes
 
 static const char *TAG = "emotion";
 
+static emotion_affect_weights_t s_affect_weights = {
+    .happiness_pct = 100,
+    .satiety_pct = 100,
+    .energy_pct = 100,
+    .social_pct = 100,
+    .fear_pct = 100,
+};
+
+static uint16_t clamp_weight_pct(uint16_t pct)
+{
+    if (pct > 300U) {
+        return 300U;
+    }
+    return pct;
+}
+
 static uint8_t clamp_meter_int(int32_t value) {
     if (value < EMOTION_METER_MIN) {
         return (uint8_t)EMOTION_METER_MIN;
@@ -242,16 +258,23 @@ static emotion_need_mask_t compute_need_mask(const emotion_context_t *ctx, uint3
 static emotion_affect_t compute_affect(const emotion_context_t *ctx, int8_t *valence_out, int8_t *arousal_out) {
     // Simple heuristic: valence driven by happiness/social/satiety vs hunger/fear; arousal by energy/fear.
     int val = 0;
-    val += ((int)ctx->happiness - 50) / 1;         // happiness strong contributor
-    val += ((int)ctx->social - 50) / 2;            // social moderate
-    val += ((int)ctx->hunger - 50) / 2;            // satiety moderate
-    val -= ((int)ctx->fear - 20);                  // fear negative
+    int c_happy = ((int)ctx->happiness - 50);      // happiness strong contributor
+    int c_social = ((int)ctx->social - 50) / 2;    // social moderate
+    int c_sat = ((int)ctx->hunger - 50) / 2;       // satiety moderate
+    int c_fear_val = ((int)ctx->fear - 20);        // fear negative
+    val += (c_happy * (int)s_affect_weights.happiness_pct) / 100;
+    val += (c_social * (int)s_affect_weights.social_pct) / 100;
+    val += (c_sat * (int)s_affect_weights.satiety_pct) / 100;
+    val -= (c_fear_val * (int)s_affect_weights.fear_pct) / 100;
     val = (val < -100) ? -100 : (val > 100 ? 100 : val);
 
     int aro = 0;
-    aro += ((int)ctx->energy - 50);                // energy strong
-    aro += ((int)ctx->fear - 20) / 2;              // fear raises arousal
-    aro -= ((int)(50 - ctx->hunger)) / 3;          // hunger (low satiety) saps arousal
+    int c_energy = ((int)ctx->energy - 50);        // energy strong
+    int c_fear_aro = ((int)ctx->fear - 20) / 2;    // fear raises arousal
+    int c_sat_aro = ((int)(50 - ctx->hunger)) / 3; // hunger (low satiety) saps arousal
+    aro += (c_energy * (int)s_affect_weights.energy_pct) / 100;
+    aro += (c_fear_aro * (int)s_affect_weights.fear_pct) / 100;
+    aro -= (c_sat_aro * (int)s_affect_weights.satiety_pct) / 100;
     aro = (aro < -100) ? -100 : (aro > 100 ? 100 : aro);
 
     if (valence_out) *valence_out = (int8_t)val;
@@ -694,6 +717,32 @@ emotion_affect_t emotion_get_affect(const emotion_context_t *ctx, int8_t *valenc
         return EMO_AFFECT_NEUTRAL;
     }
     return compute_affect(ctx, valence_out, arousal_out);
+}
+
+void emotion_set_affect_weights(const emotion_affect_weights_t *weights)
+{
+    if (!weights) {
+        return;
+    }
+    s_affect_weights.happiness_pct = clamp_weight_pct(weights->happiness_pct);
+    s_affect_weights.satiety_pct = clamp_weight_pct(weights->satiety_pct);
+    s_affect_weights.energy_pct = clamp_weight_pct(weights->energy_pct);
+    s_affect_weights.social_pct = clamp_weight_pct(weights->social_pct);
+    s_affect_weights.fear_pct = clamp_weight_pct(weights->fear_pct);
+    EL_LOGI(TAG, "Affect weights set: happy=%u satiety=%u energy=%u social=%u fear=%u",
+            (unsigned)s_affect_weights.happiness_pct,
+            (unsigned)s_affect_weights.satiety_pct,
+            (unsigned)s_affect_weights.energy_pct,
+            (unsigned)s_affect_weights.social_pct,
+            (unsigned)s_affect_weights.fear_pct);
+}
+
+void emotion_get_affect_weights(emotion_affect_weights_t *out_weights)
+{
+    if (!out_weights) {
+        return;
+    }
+    *out_weights = s_affect_weights;
 }
 
 void emotion_set_sleep_window(uint8_t start_hour, uint8_t end_hour) {

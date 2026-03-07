@@ -203,8 +203,13 @@ static int cmd_config_show(int argc, char **argv)
            cfg.sleep_start_hour, cfg.sleep_end_hour,
            cfg.sleep_window_inactivity_ms, cfg.sleep_low_battery_pct,
            cfg.sleep_global_inactivity_ms, cfg.sleep_overfed_hold_ms);
-    printf("  emotion: mood_log_interval_minutes=%d angry_dizzy_count_threshold=%d angry_dizzy_window_ms=%d angry_override_min_ms=%d angry_override_max_ms=%d\n",
+    printf("  emotion: mood_log_interval_minutes=%d affect_w_happy_pct=%d affect_w_satiety_pct=%d affect_w_energy_pct=%d affect_w_social_pct=%d affect_w_fear_pct=%d angry_dizzy_count_threshold=%d angry_dizzy_window_ms=%d angry_override_min_ms=%d angry_override_max_ms=%d\n",
            cfg.mood_log_interval_minutes,
+           cfg.affect_weight_happiness_pct,
+           cfg.affect_weight_satiety_pct,
+           cfg.affect_weight_energy_pct,
+           cfg.affect_weight_social_pct,
+           cfg.affect_weight_fear_pct,
            cfg.angry_dizzy_count_threshold,
            cfg.angry_dizzy_window_ms,
            cfg.angry_override_min_ms,
@@ -596,6 +601,14 @@ static int cmd_config_clear_all(int argc, char **argv)
                                (uint32_t)cfg.sleep_global_inactivity_ms,
                                (uint32_t)cfg.sleep_overfed_hold_ms);
     emotion_set_mood_log_interval_minutes((uint32_t)cfg.mood_log_interval_minutes);
+    emotion_affect_weights_t affect_w = {
+        .happiness_pct = (uint16_t)((cfg.affect_weight_happiness_pct < 0) ? 0 : (cfg.affect_weight_happiness_pct > 300 ? 300 : cfg.affect_weight_happiness_pct)),
+        .satiety_pct = (uint16_t)((cfg.affect_weight_satiety_pct < 0) ? 0 : (cfg.affect_weight_satiety_pct > 300 ? 300 : cfg.affect_weight_satiety_pct)),
+        .energy_pct = (uint16_t)((cfg.affect_weight_energy_pct < 0) ? 0 : (cfg.affect_weight_energy_pct > 300 ? 300 : cfg.affect_weight_energy_pct)),
+        .social_pct = (uint16_t)((cfg.affect_weight_social_pct < 0) ? 0 : (cfg.affect_weight_social_pct > 300 ? 300 : cfg.affect_weight_social_pct)),
+        .fear_pct = (uint16_t)((cfg.affect_weight_fear_pct < 0) ? 0 : (cfg.affect_weight_fear_pct > 300 ? 300 : cfg.affect_weight_fear_pct)),
+    };
+    emotion_set_affect_weights(&affect_w);
     emotion_set_angry_policy((uint8_t)cfg.angry_dizzy_count_threshold,
                              (uint32_t)cfg.angry_dizzy_window_ms,
                              (uint32_t)cfg.angry_override_min_ms,
@@ -605,10 +618,12 @@ static int cmd_config_clear_all(int argc, char **argv)
     int eff_y = cfg.eyes_center_y_offset;
     eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     printf("All presets cleared. Defaults restored.\n");
-    printf("Applied defaults: eyes=(%d,%d) glyph=(%d,%d) scale=%d lids=(sleep=%d angry=%d) sleep=%d-%d mood_log=%dmin angry_policy=(count>%d window=%dms hold=%d..%dms)\n",
+    printf("Applied defaults: eyes=(%d,%d) glyph=(%d,%d) scale=%d lids=(sleep=%d angry=%d) sleep=%d-%d mood_log=%dmin affect_w=(h=%d sat=%d e=%d s=%d f=%d) angry_policy=(count>%d window=%dms hold=%d..%dms)\n",
            eff_x, eff_y, cfg.glyph_offset_x, cfg.glyph_offset_y, cfg.glyph_scale,
            cfg.sleep_lid_depth, cfg.angry_lid_depth,
-           cfg.sleep_start_hour, cfg.sleep_end_hour, cfg.mood_log_interval_minutes,
+            cfg.sleep_start_hour, cfg.sleep_end_hour, cfg.mood_log_interval_minutes,
+           cfg.affect_weight_happiness_pct, cfg.affect_weight_satiety_pct, cfg.affect_weight_energy_pct,
+           cfg.affect_weight_social_pct, cfg.affect_weight_fear_pct,
            cfg.angry_dizzy_count_threshold, cfg.angry_dizzy_window_ms,
            cfg.angry_override_min_ms, cfg.angry_override_max_ms);
     if (preserve_wifi && old_cfg_ok && old_cfg.wifi_ssid[0] != '\0') {

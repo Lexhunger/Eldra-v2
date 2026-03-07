@@ -55,6 +55,7 @@ static FILE *s_log_file = NULL;
 static bool s_log_file_attempted = false;
 static int s_last_log_date = -1;
 static bool s_sd_enabled = true;
+static bool s_sd_mounted = false;
 static log_level_t s_sd_min_level = LOG_LEVEL_INFO;
 static log_level_t s_console_min_level = LOG_LEVEL_INFO;
 static uint32_t s_last_retry_ms = 0;
@@ -298,6 +299,9 @@ static void sd_try_open(uint32_t ms) {
     if (!s_sd_enabled) {
         return;
     }
+    if (!s_sd_mounted) {
+        return;
+    }
     if (s_log_file) {
         return;
     }
@@ -334,6 +338,7 @@ void log_init(void) {
     s_log_file_attempted = false;
     s_last_log_date = -1;
     s_sd_enabled = true;
+    s_sd_mounted = false;
     s_sd_min_level = LOG_LEVEL_INFO;
     // Default console level to INFO so mood/battery/etc. remain visible; adjust via LOGLEVEL if needed.
     s_console_min_level = LOG_LEVEL_INFO;
@@ -478,6 +483,11 @@ void log_sd_set_enabled(bool enabled) {
         fclose(s_log_file);
         sd_io_end();
         s_log_file = NULL;
+    } else if (enabled && s_sd_mounted) {
+        // Allow immediate reopen after runtime re-enable.
+        s_log_file_attempted = false;
+        uint32_t ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        sd_try_open(ms);
     }
     log_unlock();
 }
@@ -503,6 +513,7 @@ void log_sd_notify_mounted(void) {
         return;
     }
     // Reset retry bookkeeping and try immediately.
+    s_sd_mounted = true;
     s_log_file_attempted = false;
     s_logged_open_success = false;
     s_logged_open_fail = false;
