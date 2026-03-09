@@ -834,8 +834,9 @@ void Set_Backlight(uint8_t Light)
     if (Light > Backlight_MAX) Light = Backlight_MAX;
     if (!s_backlight_driver_ready) {
         Backlight_Init();
-    } else {
-        backlight_set_brightness_percent(Light);
     }
+    // Always apply the caller's requested level, including 0% (off), even on
+    // the first call when the driver was just initialized above.
+    backlight_set_brightness_percent(Light);
 }
 

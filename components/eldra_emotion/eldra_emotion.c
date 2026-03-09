@@ -625,6 +625,18 @@ void emotion_on_shake(emotion_context_t *ctx, int intensity, uint32_t now_ms) {
         ctx->dizzy_burst_count++;
     }
 
+    uint8_t trigger_count = (uint8_t)(s_angry_dizzy_count_threshold + 1U);
+    uint32_t window_elapsed_ms = elapsed_ms(ctx->dizzy_burst_window_start_ms, now_ms);
+    uint8_t remaining = (ctx->dizzy_burst_count >= trigger_count)
+                            ? 0U
+                            : (uint8_t)(trigger_count - ctx->dizzy_burst_count);
+    log_event(LOG_LEVEL_INFO, TAG,
+              "Dizzy burst progress: count=%u/%u window_elapsed=%ums remaining_for_angry=%u",
+              (unsigned)ctx->dizzy_burst_count,
+              (unsigned)trigger_count,
+              (unsigned)window_elapsed_ms,
+              (unsigned)remaining);
+
     if (ctx->dizzy_burst_count > s_angry_dizzy_count_threshold) {
         uint32_t hold_ms = random_between_u32(s_angry_override_min_ms, s_angry_override_max_ms);
         uint32_t until = now_ms + hold_ms;
@@ -636,8 +648,8 @@ void emotion_on_shake(emotion_context_t *ctx, int intensity, uint32_t now_ms) {
         ctx->dizzy_burst_window_start_ms = now_ms;
         ctx->dizzy_burst_count = 0;
         log_event(LOG_LEVEL_INFO, TAG,
-                  "Angry escalation: dizzy burst exceeded threshold (%u), hold=%ums",
-                  (unsigned)s_angry_dizzy_count_threshold, (unsigned)hold_ms);
+                  "Angry escalation: dizzy burst exceeded threshold (%u), hold=%ums until=%u",
+                  (unsigned)s_angry_dizzy_count_threshold, (unsigned)hold_ms, (unsigned)ctx->angry_until_ms);
     }
 
     emotion_state_t next = emotion_select_state(ctx, now_ms);

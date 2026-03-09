@@ -39,6 +39,7 @@ static uint64_t s_motion_qualify_since_ms = 0;
 static uint32_t s_last_seen_interaction_ms = 0;
 static bool s_sleep_reason_window = false;
 static bool s_glyph_inited = false;
+static bool s_backlight_off_logged = false;
 static emotion_context_t *s_emotion = NULL;
 static uint8_t s_sleep_start_hour = 22;
 static uint8_t s_sleep_end_hour = 8;
@@ -73,6 +74,13 @@ static const float k_wake_gyro_thresh_dps = 45.0f;
 static inline uint64_t elapsed_ms_u64(uint64_t start_ms, uint64_t now_ms)
 {
     return (now_ms >= start_ms) ? (now_ms - start_ms) : 0;
+}
+
+static inline void sleep_set_backlight(uint8_t level, const char *reason)
+{
+    EL_LOGI(TAG, "Backlight request: level=%u reason=%s",
+            (unsigned)level, reason ? reason : "unspecified");
+    eldra_display_round_set_backlight(level);
 }
 
 static bool get_local_hour_if_valid(int *hour_out)
@@ -184,7 +192,10 @@ static void sleep_worker_task(void *arg)
                     uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
                     emotion_force_sleep(s_emotion, true, now_ms);
                 }
-                eldra_display_round_set_backlight(k_backlight_sleep_visual);
+                sleep_set_backlight(k_backlight_sleep_visual, "sleep_visual_stage");
+                if (eldra_request_render_now) {
+                    eldra_request_render_now();
+                }
                 break;
 
             case SLEEP_MSG_SHUTDOWN: {
@@ -200,7 +211,9 @@ static void sleep_worker_task(void *arg)
                     EL_LOGW(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(w));
                 }
 
-                eldra_display_round_set_backlight(0);
+                sleep_set_backlight(0, "sleep_shutdown_stage");
+                s_backlight_off_logged = true;
+                EL_LOGW(TAG, "Sleep mode: ASLEEP");
                 if (!k_enable_panel_power_stage) {
                     if (s_state_lock) {
                         xSemaphoreTake(s_state_lock, portMAX_DELAY);
@@ -274,7 +287,8 @@ static void sleep_worker_task(void *arg)
                     xSemaphoreGive(s_state_lock);
                 }
 
-                eldra_display_round_set_backlight(k_backlight_awake);
+                sleep_set_backlight(k_backlight_awake, "sleep_wake_stage");
+                s_backlight_off_logged = false;
                 if (eldra_request_render_now) {
                     eldra_request_render_now();
                 }
@@ -331,6 +345,7 @@ void eldra_sleep_init(emotion_context_t *ctx)
     s_visual_stage_done = false;
     s_panel_sleep_applied = false;
     s_panel_shutdown_attempted = false;
+    s_backlight_off_logged = false;
     EL_LOGI(TAG, "sleep subsystem ready");
 }
 
@@ -393,12 +408,13 @@ static void sleep_now_internal(bool reason_window)
     s_shutdown_time_ms = now_ms + delay_ms;
     s_sleeping = true;
     s_power_stage_done = false;
-    s_visual_stage_done = false;
+    s_visual_stage_done = true;
     s_panel_sleep_applied = false;
     s_panel_shutdown_attempted = false;
     s_sleep_reason_window = reason_window;
     s_sleep_started_ms = now_ms;
     s_last_sleep_transition_ms = now_ms;
+    s_backlight_off_logged = false;
 
     if (s_state_lock) {
         xSemaphoreGive(s_state_lock);
@@ -407,7 +423,11 @@ static void sleep_now_internal(bool reason_window)
     if (s_glyph_inited) {
         eldra_glyphs_show(GLYPH_SLEEP, 0);
     }
+    if (eldra_request_render_now) {
+        eldra_request_render_now();
+    }
     drain_sleep_queue();
+    post_sleep_msg(SLEEP_MSG_VISUAL);
 
     EL_LOGI(TAG, "Sleep requested; shutdown staging in %u ms", delay_ms);
 }
@@ -448,7 +468,8 @@ void eldra_sleep_wake_now(void)
         emotion_force_sleep(s_emotion, false, now_ms);
     }
     // Immediate UX recovery while the worker performs full panel wake/reset.
-    eldra_display_round_set_backlight(k_backlight_awake);
+    sleep_set_backlight(k_backlight_awake, "wake_now_immediate");
+    s_backlight_off_logged = false;
     if (eldra_request_render_now) {
         eldra_request_render_now();
     }
@@ -479,6 +500,18 @@ void eldra_sleep_tick(uint64_t now_ms)
         visual_stage_done = s_visual_stage_done;
         shutdown_at_ms = s_shutdown_time_ms;
         xSemaphoreGive(s_state_lock);
+    }
+
+    // Keep backlight hard-off once shutdown stage has been entered, even if
+    // worker queue handling was delayed or another path nudged brightness.
+    if (sleeping && power_stage_done) {
+        if (!s_backlight_off_logged) {
+            EL_LOGW(TAG, "Sleep mode: ASLEEP (tick guard)");
+            sleep_set_backlight(0, "sleep_tick_guard");
+            s_backlight_off_logged = true;
+        } else {
+            eldra_display_round_set_backlight(0);
+        }
     }
 
     if (!sleeping) {
@@ -617,14 +650,26 @@ void eldra_sleep_tick(uint64_t now_ms)
     }
 
     if (!power_stage_done && shutdown_at_ms > 0 && now_ms >= shutdown_at_ms) {
+        bool trigger_shutdown = false;
         if (s_state_lock) {
             xSemaphoreTake(s_state_lock, portMAX_DELAY);
             if (s_sleeping && !s_power_stage_done && now_ms >= s_shutdown_time_ms) {
                 s_power_stage_done = true;
-                post_sleep_msg(SLEEP_MSG_SHUTDOWN);
-                EL_LOGW(TAG, "Sleep window reached; staging power-down now");
+                trigger_shutdown = true;
             }
             xSemaphoreGive(s_state_lock);
+        }
+        if (trigger_shutdown) {
+            if (!visual_stage_done) {
+                EL_LOGW(TAG, "Sleep shutdown reached before visual stage; forcing visual stage");
+                post_sleep_msg(SLEEP_MSG_VISUAL);
+            }
+            post_sleep_msg(SLEEP_MSG_SHUTDOWN);
+            // Failsafe: immediately gate backlight even if worker message handling is delayed.
+            sleep_set_backlight(0, "sleep_shutdown_failsafe");
+            s_backlight_off_logged = true;
+            EL_LOGW(TAG, "Sleep mode: ASLEEP (shutdown trigger)");
+            EL_LOGW(TAG, "Sleep window reached; staging power-down now");
         }
     }
 }
@@ -724,5 +769,11 @@ bool eldra_sleep_should_suppress_imu(uint64_t now_ms)
 bool eldra_sleep_is_active(void)
 {
     return snapshot_sleeping();
+}
+
+bool eldra_sleep_is_window_now(void)
+{
+    int local_hour = 0;
+    return get_local_hour_if_valid(&local_hour) && is_in_sleep_window(local_hour);
 }
 

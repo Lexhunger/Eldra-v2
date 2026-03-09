@@ -149,6 +149,9 @@ static void handle_command(emotion_context_t *emotion, const pet_command_t *cmd,
         case CMD_PLAY:
             emotion_on_play(emotion, now_ms);
             break;
+        case CMD_SHAKE:
+            emotion_on_shake(emotion, (int)cmd->arg0, now_ms);
+            break;
         case CMD_DEBUG_FORCE_STATE: {
             emotion_state_t forced = (emotion_state_t)cmd->arg0;
             emotion_state_t prev = emotion->current_state;

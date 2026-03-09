@@ -214,6 +214,12 @@ static int cmd_config_show(int argc, char **argv)
            cfg.angry_dizzy_window_ms,
            cfg.angry_override_min_ms,
            cfg.angry_override_max_ms);
+    printf("  dizzy_imu: gyro_thresh=%.1f spike=%.1f gdev=%.2f accum_ms=%d cooldown_ms=%d\n",
+           (double)cfg.dizzy_gyro_thresh_dps_x10 / 10.0,
+           (double)cfg.dizzy_gyro_spike_dps_x10 / 10.0,
+           (double)cfg.dizzy_gdev_x100 / 100.0,
+           cfg.dizzy_accum_ms,
+           cfg.dizzy_cooldown_ms);
     return 0;
 }
 
@@ -613,19 +619,31 @@ static int cmd_config_clear_all(int argc, char **argv)
                              (uint32_t)cfg.angry_dizzy_window_ms,
                              (uint32_t)cfg.angry_override_min_ms,
                              (uint32_t)cfg.angry_override_max_ms);
+    eldra_eyes_dizzy_config_t dizzy_cfg = {
+        .gyro_thresh_dps = ((float)cfg.dizzy_gyro_thresh_dps_x10) / 10.0f,
+        .gyro_spike_dps = ((float)cfg.dizzy_gyro_spike_dps_x10) / 10.0f,
+        .gdev_thresh = ((float)cfg.dizzy_gdev_x100) / 100.0f,
+        .accum_ms = (uint32_t)cfg.dizzy_accum_ms,
+        .cooldown_ms = (uint32_t)cfg.dizzy_cooldown_ms,
+    };
+    eldra_eyes_set_dizzy_config(&dizzy_cfg);
 
     int eff_x = cfg.eyes_center_x_offset;
     int eff_y = cfg.eyes_center_y_offset;
     eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     printf("All presets cleared. Defaults restored.\n");
-    printf("Applied defaults: eyes=(%d,%d) glyph=(%d,%d) scale=%d lids=(sleep=%d angry=%d) sleep=%d-%d mood_log=%dmin affect_w=(h=%d sat=%d e=%d s=%d f=%d) angry_policy=(count>%d window=%dms hold=%d..%dms)\n",
+    printf("Applied defaults: eyes=(%d,%d) glyph=(%d,%d) scale=%d lids=(sleep=%d angry=%d) sleep=%d-%d mood_log=%dmin affect_w=(h=%d sat=%d e=%d s=%d f=%d) angry_policy=(count>%d window=%dms hold=%d..%dms) dizzy_imu=(gyro=%.1f spike=%.1f gdev=%.2f accum=%dms cool=%dms)\n",
            eff_x, eff_y, cfg.glyph_offset_x, cfg.glyph_offset_y, cfg.glyph_scale,
            cfg.sleep_lid_depth, cfg.angry_lid_depth,
             cfg.sleep_start_hour, cfg.sleep_end_hour, cfg.mood_log_interval_minutes,
            cfg.affect_weight_happiness_pct, cfg.affect_weight_satiety_pct, cfg.affect_weight_energy_pct,
            cfg.affect_weight_social_pct, cfg.affect_weight_fear_pct,
            cfg.angry_dizzy_count_threshold, cfg.angry_dizzy_window_ms,
-           cfg.angry_override_min_ms, cfg.angry_override_max_ms);
+           cfg.angry_override_min_ms, cfg.angry_override_max_ms,
+           (double)cfg.dizzy_gyro_thresh_dps_x10 / 10.0,
+           (double)cfg.dizzy_gyro_spike_dps_x10 / 10.0,
+           (double)cfg.dizzy_gdev_x100 / 100.0,
+           cfg.dizzy_accum_ms, cfg.dizzy_cooldown_ms);
     if (preserve_wifi && old_cfg_ok && old_cfg.wifi_ssid[0] != '\0') {
         printf("WiFi preserved: ssid=\"%s\" roam=%s auto_init_wifi=%s\n",
                cfg.wifi_ssid,

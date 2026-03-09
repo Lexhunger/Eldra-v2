@@ -63,6 +63,23 @@ The Emotion Engine only signals intent; display, haptics, and audio live in othe
 
 The default stub implementation simply logs state changes; the real render/haptics/audio layers will override these hooks later.
 
+## Dizzy IMU Tuning
+- `eyes_dizzy status` - print current IMU dizzy thresholds.
+- `eyes_dizzy preset <easy|normal|hard> [persist|temp]` - apply a preset.
+- `eyes_dizzy <gyro_thresh|spike|gdev|accum_ms|cooldown_ms> <value> [persist|temp]` - tune one field.
+- `eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]` - set all values.
+
+Field definitions:
+- `gyro_thresh` - sustained gyro threshold in deg/sec.
+- `spike` - instant spike threshold in deg/sec.
+- `gdev` - accel magnitude deviation from 1g (unitless).
+- `accum_ms` - required time above threshold.
+- `cooldown_ms` - post-trigger refractory time.
+
+Persistence:
+- `persist` (default) writes to `/sdcard/config.json`.
+- `temp` changes runtime behavior only.
+
 ## Data Flow
 ```
 inputs (events) -> meter updates -> state selection -> output hooks

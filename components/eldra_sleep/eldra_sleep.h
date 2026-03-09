@@ -22,6 +22,7 @@ bool eldra_sleep_on_motion(float ax_g, float ay_g, float az_g, float gx_dps, flo
 bool eldra_sleep_get_shutdown_eta_ms(uint64_t now_ms, uint32_t *remaining_ms);
 bool eldra_sleep_should_suppress_imu(uint64_t now_ms);
 bool eldra_sleep_is_active(void);
+bool eldra_sleep_is_window_now(void);
 
 #ifdef __cplusplus
 }

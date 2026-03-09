@@ -80,6 +80,11 @@ void config_store_get_defaults(config_store_t *out)
     out->angry_dizzy_window_ms = 300000; // 5 minutes
     out->angry_override_min_ms = 120000; // 2 minutes
     out->angry_override_max_ms = 300000; // 5 minutes
+    out->dizzy_gyro_thresh_dps_x10 = 650; // 65.0 dps
+    out->dizzy_gyro_spike_dps_x10 = 1450; // 145.0 dps
+    out->dizzy_gdev_x100 = 30;            // 0.30 gdev
+    out->dizzy_accum_ms = 220;            // 220 ms
+    out->dizzy_cooldown_ms = 4500;        // 4.5 s
     out->mood_happiness = -1;
     out->mood_hunger = -1;
     out->mood_energy = -1;
@@ -323,6 +328,11 @@ esp_err_t config_store_load(config_store_t *out)
         if (!cJSON_HasObjectItem(emotion, "angry_dizzy_window_ms")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_override_min_ms")) updated = true;
         if (!cJSON_HasObjectItem(emotion, "angry_override_max_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gyro_thresh_dps_x10")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gyro_spike_dps_x10")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gdev_x100")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_accum_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_cooldown_ms")) updated = true;
         json_apply_int(emotion, "mood_log_interval_minutes", &out->mood_log_interval_minutes);
         json_apply_int(emotion, "affect_weight_happiness_pct", &out->affect_weight_happiness_pct);
         json_apply_int(emotion, "affect_weight_satiety_pct", &out->affect_weight_satiety_pct);
@@ -333,6 +343,11 @@ esp_err_t config_store_load(config_store_t *out)
         json_apply_int(emotion, "angry_dizzy_window_ms", &out->angry_dizzy_window_ms);
         json_apply_int(emotion, "angry_override_min_ms", &out->angry_override_min_ms);
         json_apply_int(emotion, "angry_override_max_ms", &out->angry_override_max_ms);
+        json_apply_int(emotion, "dizzy_gyro_thresh_dps_x10", &out->dizzy_gyro_thresh_dps_x10);
+        json_apply_int(emotion, "dizzy_gyro_spike_dps_x10", &out->dizzy_gyro_spike_dps_x10);
+        json_apply_int(emotion, "dizzy_gdev_x100", &out->dizzy_gdev_x100);
+        json_apply_int(emotion, "dizzy_accum_ms", &out->dizzy_accum_ms);
+        json_apply_int(emotion, "dizzy_cooldown_ms", &out->dizzy_cooldown_ms);
     } else {
         updated = true;
     }
@@ -407,6 +422,11 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON_AddNumberToObject(emotion, "angry_dizzy_window_ms", cfg->angry_dizzy_window_ms);
     cJSON_AddNumberToObject(emotion, "angry_override_min_ms", cfg->angry_override_min_ms);
     cJSON_AddNumberToObject(emotion, "angry_override_max_ms", cfg->angry_override_max_ms);
+    cJSON_AddNumberToObject(emotion, "dizzy_gyro_thresh_dps_x10", cfg->dizzy_gyro_thresh_dps_x10);
+    cJSON_AddNumberToObject(emotion, "dizzy_gyro_spike_dps_x10", cfg->dizzy_gyro_spike_dps_x10);
+    cJSON_AddNumberToObject(emotion, "dizzy_gdev_x100", cfg->dizzy_gdev_x100);
+    cJSON_AddNumberToObject(emotion, "dizzy_accum_ms", cfg->dizzy_accum_ms);
+    cJSON_AddNumberToObject(emotion, "dizzy_cooldown_ms", cfg->dizzy_cooldown_ms);
 
     cJSON *mood = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "mood_state", mood);

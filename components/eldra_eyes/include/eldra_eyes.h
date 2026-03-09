@@ -46,6 +46,14 @@ typedef struct {
     bool idle_clip_active;
 } eldra_eyes_activity_t;
 
+typedef struct {
+    float gyro_thresh_dps;
+    float gyro_spike_dps;
+    float gdev_thresh;
+    uint32_t accum_ms;
+    uint32_t cooldown_ms;
+} eldra_eyes_dizzy_config_t;
+
 /**
  * @brief Allocate and initialize a new Eldra eyes context.
  *
@@ -117,6 +125,18 @@ void eldra_eyes_set_lid_depths(uint8_t sleep_depth, uint8_t angry_depth);
  * @brief Get current base lid depths for sleepy/angry overlays.
  */
 void eldra_eyes_get_lid_depths(uint8_t *sleep_depth, uint8_t *angry_depth);
+
+/**
+ * @brief Configure IMU thresholds used to trigger reactive dizzy.
+ *
+ * Values are clamped to safe ranges. This affects runtime behavior immediately.
+ */
+void eldra_eyes_set_dizzy_config(const eldra_eyes_dizzy_config_t *cfg);
+
+/**
+ * @brief Read current IMU dizzy trigger thresholds.
+ */
+void eldra_eyes_get_dizzy_config(eldra_eyes_dizzy_config_t *out_cfg);
 
 /**
  * @brief Trigger a CHIBI -> ELDRITCH transform animation.

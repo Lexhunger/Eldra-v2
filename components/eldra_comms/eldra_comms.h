@@ -20,6 +20,7 @@ typedef enum {
     CMD_FEED = 0,
     CMD_PET,
     CMD_PLAY,
+    CMD_SHAKE,
     CMD_DEBUG_FORCE_STATE,
     CMD_SET_FLAG,
     CMD_RESERVED_RFID,

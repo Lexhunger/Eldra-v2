@@ -54,6 +54,15 @@ static volatile bool g_panel_ready_seen = false;
 static volatile bool g_sleep_lid_heavy = false;
 // Test override for sleep-eye visuals: 0=off, 1=light sleepy lid, 2=heavy sleepy lid.
 static volatile uint8_t g_sleep_eye_override = 0;
+static bool g_sleep_glyph_forced_on = false;
+static uint32_t g_sleep_glyph_inactive_since_ms = 0;
+static const uint32_t k_sleep_glyph_hide_grace_ms = 5000;
+typedef enum {
+    SLEEP_EYE_STAGE_OFF = 0,
+    SLEEP_EYE_STAGE_LIGHT,
+    SLEEP_EYE_STAGE_HEAVY,
+} sleep_eye_stage_t;
+static sleep_eye_stage_t g_sleep_eye_stage_last = SLEEP_EYE_STAGE_OFF;
 static uint64_t g_last_cloud_state_push_ms = 0;
 static bool sntp_started = false;
 static volatile bool g_has_ip = false;
@@ -132,6 +141,17 @@ static const char *reset_reason_name(esp_reset_reason_t rr)
         case ESP_RST_PWR_GLITCH: return "power_glitch";
         case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
         default: return "unmapped";
+    }
+}
+
+static const char *sleep_eye_stage_name(sleep_eye_stage_t stage)
+{
+    switch (stage) {
+        case SLEEP_EYE_STAGE_LIGHT: return "LIGHT";
+        case SLEEP_EYE_STAGE_HEAVY: return "HEAVY";
+        case SLEEP_EYE_STAGE_OFF:
+        default:
+            return "OFF";
     }
 }
 
@@ -249,6 +269,8 @@ static void display_task(void *arg)
     bool last_panel_sleeping = false;
     bool last_panel_reinit = false;
     bool last_sleep_active = false;
+    bool last_sleep_blackout = false;
+    bool last_dizzy_active = false;
     uint8_t post_reset_probe_stage = 0;
     uint32_t post_reset_probe_next_ms = 0;
 
@@ -259,9 +281,12 @@ static void display_task(void *arg)
         last_us = now_us;
         uint32_t now_ms = (uint32_t)(now_us / 1000ULL);
         bool sleep_active = eldra_sleep_is_active();
+        uint32_t sleep_eta_gate_ms = 0;
+        bool sleep_countdown_active_gate = eldra_sleep_get_shutdown_eta_ms(now_ms, &sleep_eta_gate_ms);
+        bool sleep_blackout = sleep_active && !sleep_countdown_active_gate;
 
-        if (sleep_active) {
-            if (!last_sleep_active) {
+        if (sleep_blackout) {
+            if (!last_sleep_blackout) {
                 if (g_display_runtime.framebuffer &&
                     g_display_runtime.fb_width > 0 &&
                     g_display_runtime.fb_height > 0) {
@@ -275,11 +300,26 @@ static void display_task(void *arg)
                                                        g_display_runtime.fb_height);
                     }
                 }
+                EL_LOGW(TAG, "Sleep display mode: BLACKOUT (asleep)");
             }
+            last_sleep_blackout = true;
             last_sleep_active = true;
             last_us = now_us;
             vTaskDelay(pdMS_TO_TICKS(30));
             continue;
+        }
+
+        if (last_sleep_blackout) {
+            last_sleep_blackout = false;
+            g_force_render_now = true;
+        }
+
+        if (sleep_active) {
+            if (!last_sleep_active) {
+                EL_LOGI(TAG, "Sleep display mode: VISUAL (eta=%u ms)", (unsigned)sleep_eta_gate_ms);
+                g_force_render_now = true;
+            }
+            last_sleep_active = true;
         } else if (last_sleep_active) {
             last_sleep_active = false;
             last_us = now_us;
@@ -319,6 +359,19 @@ static void display_task(void *arg)
                 eldra_eyes_activity_t eye_activity = {0};
                 eldra_eyes_get_last_render_center_offset(&eye_dx, &eye_dy);
                 eldra_eyes_get_activity(g_eyes_ctx, &eye_activity);
+                if (eye_activity.dizzy_active && !last_dizzy_active) {
+                    pet_command_t shake_cmd = {
+                        .type = CMD_SHAKE,
+                        .arg0 = 1U, // mild intensity; emotion engine handles burst policy
+                        .arg1 = 0U,
+                    };
+                    if (comms_enqueue_command(&shake_cmd)) {
+                        EL_LOGI(TAG, "Dizzy event bridged to emotion (intensity=%u)", (unsigned)shake_cmd.arg0);
+                    } else {
+                        EL_LOGW(TAG, "Failed to bridge dizzy event to emotion");
+                    }
+                }
+                last_dizzy_active = eye_activity.dizzy_active;
                 if (eye_dx != last_eye_dx || eye_dy != last_eye_dy) {
                     EL_LOGI(TAG, "Render center changed eye=(%d,%d)", eye_dx, eye_dy);
                     last_eye_dx = eye_dx;
@@ -920,6 +973,11 @@ void app_main(void) {
     int raw_affect_energy = cfg.affect_weight_energy_pct;
     int raw_affect_social = cfg.affect_weight_social_pct;
     int raw_affect_fear = cfg.affect_weight_fear_pct;
+    int raw_dizzy_thresh_x10 = cfg.dizzy_gyro_thresh_dps_x10;
+    int raw_dizzy_spike_x10 = cfg.dizzy_gyro_spike_dps_x10;
+    int raw_dizzy_gdev_x100 = cfg.dizzy_gdev_x100;
+    int raw_dizzy_accum_ms = cfg.dizzy_accum_ms;
+    int raw_dizzy_cooldown_ms = cfg.dizzy_cooldown_ms;
     cfg.glyph_offset_x = clamp_int(cfg.glyph_offset_x, -400, 400);
     cfg.glyph_offset_y = clamp_int(cfg.glyph_offset_y, -400, 400);
     cfg.sleep_lid_depth = clamp_int(cfg.sleep_lid_depth, 0, 6);
@@ -929,6 +987,14 @@ void app_main(void) {
     cfg.affect_weight_energy_pct = clamp_int(cfg.affect_weight_energy_pct, 0, 300);
     cfg.affect_weight_social_pct = clamp_int(cfg.affect_weight_social_pct, 0, 300);
     cfg.affect_weight_fear_pct = clamp_int(cfg.affect_weight_fear_pct, 0, 300);
+    cfg.dizzy_gyro_thresh_dps_x10 = clamp_int(cfg.dizzy_gyro_thresh_dps_x10, 200, 5000);
+    cfg.dizzy_gyro_spike_dps_x10 = clamp_int(cfg.dizzy_gyro_spike_dps_x10, 300, 10000);
+    cfg.dizzy_gdev_x100 = clamp_int(cfg.dizzy_gdev_x100, 5, 100);
+    cfg.dizzy_accum_ms = clamp_int(cfg.dizzy_accum_ms, 50, 5000);
+    cfg.dizzy_cooldown_ms = clamp_int(cfg.dizzy_cooldown_ms, 250, 60000);
+    if (cfg.dizzy_gyro_spike_dps_x10 < (cfg.dizzy_gyro_thresh_dps_x10 + 50)) {
+        cfg.dizzy_gyro_spike_dps_x10 = cfg.dizzy_gyro_thresh_dps_x10 + 50;
+    }
     if (cfg_loaded && (cfg.glyph_offset_x != raw_glyph_x || cfg.glyph_offset_y != raw_glyph_y)) {
         (void)config_store_save(&cfg);
         EL_LOGW(TAG, "Clamped persisted glyph offsets (%d,%d) -> (%d,%d)",
@@ -954,6 +1020,20 @@ void app_main(void) {
                 raw_affect_social, cfg.affect_weight_social_pct,
                 raw_affect_fear, cfg.affect_weight_fear_pct);
     }
+    if (cfg_loaded &&
+        (cfg.dizzy_gyro_thresh_dps_x10 != raw_dizzy_thresh_x10 ||
+         cfg.dizzy_gyro_spike_dps_x10 != raw_dizzy_spike_x10 ||
+         cfg.dizzy_gdev_x100 != raw_dizzy_gdev_x100 ||
+         cfg.dizzy_accum_ms != raw_dizzy_accum_ms ||
+         cfg.dizzy_cooldown_ms != raw_dizzy_cooldown_ms)) {
+        (void)config_store_save(&cfg);
+        EL_LOGW(TAG, "Clamped persisted dizzy config gyro=%d->%d spike=%d->%d gdev=%d->%d accum=%d->%d cooldown=%d->%d",
+                raw_dizzy_thresh_x10, cfg.dizzy_gyro_thresh_dps_x10,
+                raw_dizzy_spike_x10, cfg.dizzy_gyro_spike_dps_x10,
+                raw_dizzy_gdev_x100, cfg.dizzy_gdev_x100,
+                raw_dizzy_accum_ms, cfg.dizzy_accum_ms,
+                raw_dizzy_cooldown_ms, cfg.dizzy_cooldown_ms);
+    }
     emotion_affect_weights_t affect_w = {
         .happiness_pct = (uint16_t)cfg.affect_weight_happiness_pct,
         .satiety_pct = (uint16_t)cfg.affect_weight_satiety_pct,
@@ -962,6 +1042,14 @@ void app_main(void) {
         .fear_pct = (uint16_t)cfg.affect_weight_fear_pct,
     };
     emotion_set_affect_weights(&affect_w);
+    eldra_eyes_dizzy_config_t dizzy_cfg = {
+        .gyro_thresh_dps = ((float)cfg.dizzy_gyro_thresh_dps_x10) / 10.0f,
+        .gyro_spike_dps = ((float)cfg.dizzy_gyro_spike_dps_x10) / 10.0f,
+        .gdev_thresh = ((float)cfg.dizzy_gdev_x100) / 100.0f,
+        .accum_ms = (uint32_t)cfg.dizzy_accum_ms,
+        .cooldown_ms = (uint32_t)cfg.dizzy_cooldown_ms,
+    };
+    eldra_eyes_set_dizzy_config(&dizzy_cfg);
     g_last_mood_save_ms = (uint64_t)start_ms;
     g_last_time_persist_ms = (uint64_t)start_ms;
     g_cfg_current = cfg; // stash for later event reapplication
@@ -1212,7 +1300,9 @@ void app_main(void) {
             eldra_eyes_mood_t desired = mood_for_state(g_emotion.current_state);
             uint32_t desired_mods = eye_modifiers_for_needs(emotion_get_needs(&g_emotion));
             uint8_t sleep_eye_override = g_sleep_eye_override;
-            if (sleep_eye_override != 0U) {
+            bool sleep_active_now = eldra_sleep_is_active();
+            bool sleep_window_now = eldra_sleep_is_window_now();
+            if (sleep_active_now || sleep_window_now || sleep_eye_override != 0U) {
                 desired_mods |= ELDRA_EYES_MOD_SLEEPY;
             }
             if (eyes_lock_take(pdMS_TO_TICKS(2))) {
@@ -1279,17 +1369,68 @@ void app_main(void) {
 
         eldra_sleep_tick(now_ms);
 
-        // Sleepy eyes: use a lighter lid generally, then heavier droop only in
-        // the final 60 seconds before sleep shutdown stage.
+        // Sleepy eyes: light droop from sleep start, then heavy droop in the
+        // final 5 minutes before sleep shutdown stage.
         uint32_t sleep_eta_ms = 0;
         bool sleep_countdown_active = eldra_sleep_get_shutdown_eta_ms(now_ms, &sleep_eta_ms);
         uint8_t sleep_eye_override = g_sleep_eye_override;
+        bool sleep_window_now = eldra_sleep_is_window_now();
+        bool sleep_active_now = eldra_sleep_is_active();
+        bool sleep_light_active = sleep_active_now || sleep_window_now || (sleep_eye_override != 0U);
         if (sleep_eye_override == 2U) {
             g_sleep_lid_heavy = true;
         } else if (sleep_eye_override == 1U) {
             g_sleep_lid_heavy = false;
         } else {
-            g_sleep_lid_heavy = sleep_countdown_active && (sleep_eta_ms <= 60000U);
+            g_sleep_lid_heavy = sleep_countdown_active && (sleep_eta_ms <= 300000U);
+        }
+
+        sleep_eye_stage_t current_stage = SLEEP_EYE_STAGE_OFF;
+        if (g_sleep_lid_heavy) {
+            current_stage = SLEEP_EYE_STAGE_HEAVY;
+        } else if (sleep_light_active) {
+            current_stage = SLEEP_EYE_STAGE_LIGHT;
+        }
+
+        // Keep glyph visibility aligned with sleep-eye visuals with a short
+        // grace period to avoid flicker/disappear on transient window state
+        // changes near time sync.
+        if (sleep_light_active) {
+            g_sleep_glyph_inactive_since_ms = 0;
+            if (!g_sleep_glyph_forced_on) {
+                EL_LOGI(TAG, "Sleep-glyph ON (window=%d sleep=%d override=%u)",
+                        sleep_window_now ? 1 : 0,
+                        sleep_active_now ? 1 : 0,
+                        (unsigned)sleep_eye_override);
+            }
+            // Pin slot 0 while sleep visuals are active so other unforced-hide
+            // paths cannot accidentally clear it.
+            eldra_glyphs_force_show(GLYPH_SLEEP, 0);
+            g_sleep_glyph_forced_on = true;
+        } else {
+            if (g_sleep_glyph_inactive_since_ms == 0) {
+                g_sleep_glyph_inactive_since_ms = now_ms;
+            }
+            if (g_sleep_glyph_forced_on &&
+                (now_ms - g_sleep_glyph_inactive_since_ms) >= k_sleep_glyph_hide_grace_ms) {
+                EL_LOGI(TAG, "Sleep-glyph OFF (inactive for %u ms)",
+                        (unsigned)(now_ms - g_sleep_glyph_inactive_since_ms));
+                eldra_glyphs_hide(0);
+                g_sleep_glyph_forced_on = false;
+            }
+        }
+
+        if (current_stage != g_sleep_eye_stage_last) {
+            EL_LOGI(TAG,
+                    "Sleep-eye stage %s -> %s (window=%d sleep=%d countdown=%d eta_ms=%u override=%u)",
+                    sleep_eye_stage_name(g_sleep_eye_stage_last),
+                    sleep_eye_stage_name(current_stage),
+                    sleep_window_now ? 1 : 0,
+                    sleep_active_now ? 1 : 0,
+                    sleep_countdown_active ? 1 : 0,
+                    (unsigned)sleep_eta_ms,
+                    (unsigned)sleep_eye_override);
+            g_sleep_eye_stage_last = current_stage;
         }
 
         vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS pacing

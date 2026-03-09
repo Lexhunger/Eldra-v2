@@ -45,19 +45,44 @@ static const float k_breath_phase_offset_left = 0.35f; // ~20 degrees
 static const float k_two_pi = 6.2831853f;
 static const float k_rad_to_deg = 57.2957795f;
 static const float k_imu_ema_alpha = 0.18f;
-// Keep dizzy easy to trigger with real shake motion while avoiding tiny jitter.
-static const float k_imu_gyro_dizzy_thresh_dps = 45.0f;
-static const float k_imu_gyro_dizzy_spike_dps = 95.0f;
-static const float k_imu_gyro_decay_floor_dps = 22.0f;
-static const float k_imu_gdev_dizzy_thresh = 0.22f;
-static const uint32_t k_imu_gyro_dizzy_time_ms = 110;
-static const uint32_t k_dizzy_cooldown_ms = 3000;
+// Default to a deliberate shake gesture (not gentle pickup).
+static const float k_imu_gyro_dizzy_thresh_default_dps = 65.0f;
+static const float k_imu_gyro_dizzy_spike_default_dps = 145.0f;
+static const float k_imu_gdev_dizzy_default_thresh = 0.30f;
+static const uint32_t k_imu_gyro_dizzy_time_default_ms = 220;
+static const uint32_t k_dizzy_cooldown_default_ms = 4500;
 static const uint32_t k_imu_log_interval_ms = 1500;
 static const uint32_t k_idle_force_blink_ms = 4500;
+static const uint32_t k_idle_force_blink_sleepy_ms = 18000;
 static const uint32_t k_idle_force_look_ms = 9000;
 static bool s_test_pattern = false;
 
+typedef struct {
+    float gyro_thresh_dps;
+    float gyro_spike_dps;
+    float gyro_decay_floor_dps;
+    float gdev_thresh;
+    uint32_t accum_ms;
+    uint32_t cooldown_ms;
+} dizzy_cfg_t;
+
+static dizzy_cfg_t s_dizzy_cfg = {
+    .gyro_thresh_dps = k_imu_gyro_dizzy_thresh_default_dps,
+    .gyro_spike_dps = k_imu_gyro_dizzy_spike_default_dps,
+    .gyro_decay_floor_dps = (k_imu_gyro_dizzy_thresh_default_dps * 0.40f),
+    .gdev_thresh = k_imu_gdev_dizzy_default_thresh,
+    .accum_ms = k_imu_gyro_dizzy_time_default_ms,
+    .cooldown_ms = k_dizzy_cooldown_default_ms,
+};
+static portMUX_TYPE s_dizzy_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static inline int clamp_int(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static inline float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
@@ -247,6 +272,14 @@ static const idle_entry_t k_idle_entries[] = {
     {IDLE_CLIP_EXTENDED_BLINK, 1, 200, 220, 120000}, // rare long closed-eye rest (few minutes)
 };
 
+static bool sleepy_visual_active(const struct eldra_eyes_context *ctx)
+{
+    if (!ctx) {
+        return false;
+    }
+    return ctx->sleep_lid_heavy || ((ctx->modifiers & ELDRA_EYES_MOD_SLEEPY) != 0U);
+}
+
 /* --- CHIBI SPRITE DATA (PALETTE-INDEXED) ---------------------------------- */
 
 // 8-color RGB565 palette corresponding to the design reference.
@@ -374,6 +407,36 @@ static const uint8_t k_eye_frame_closed[11][11] = {
     {0,0,0,0,0,0,0,0,0,0,0},
     {0,0,0,0,0,0,0,0,0,0,0},
     {0,0,0,0,0,0,0,0,0,0,0},
+};
+
+// Sleepy template: half droop (keeps full palette shading/volume).
+static const uint8_t k_eye_frame_sleepy_half[11][11] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
+    {0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0},
+    {0, 1, 1, 2, 2, 2, 2, 2, 1, 1, 0},
+    {1, 2, 3, 4, 2, 0, 7, 2, 4, 3, 1},
+    {1, 3, 4, 3, 1, 0, 0, 3, 6, 3, 1},
+    {1, 3, 6, 3, 1, 0, 0, 3, 6, 3, 1},
+    {1, 2, 4, 4, 3, 1, 3, 4, 4, 2, 1},
+    {0, 1, 2, 5, 5, 4, 6, 4, 2, 1, 0},
+    {0, 0, 1, 1, 2, 2, 2, 1, 1, 0, 0},
+    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
+};
+
+// Sleepy template: heavy droop/exhausted squint.
+static const uint8_t k_eye_frame_sleepy_heavy[11][11] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
+    {0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0},
+    {0, 1, 1, 2, 2, 2, 2, 2, 1, 1, 0},
+    {1, 2, 3, 2, 1, 0, 7, 2, 3, 2, 1},
+    {1, 2, 4, 3, 1, 0, 0, 3, 4, 2, 1},
+    {0, 1, 2, 3, 3, 1, 3, 3, 2, 1, 0},
+    {0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0},
+    {0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
 typedef struct {
@@ -632,9 +695,34 @@ static void draw_test_pattern(uint16_t *fb, uint16_t fb_width, uint16_t fb_heigh
 /* Pick the next idle clip, weighted and avoiding immediate repeats (except breath which is continuous). */
 static void idle_pick_next(struct eldra_eyes_context *ctx)
 {
+    const bool sleepy_active = sleepy_visual_active(ctx);
     int total_weight = 0;
     for (size_t i = 0; i < sizeof(k_idle_entries) / sizeof(k_idle_entries[0]); ++i) {
-        total_weight += k_idle_entries[i].weight;
+        const idle_entry_t *e = &k_idle_entries[i];
+        if (sleepy_active &&
+            (e->clip == IDLE_CLIP_LOOK ||
+             e->clip == IDLE_CLIP_DOUBLE_BLINK ||
+             e->clip == IDLE_CLIP_EXTENDED_BLINK)) {
+            continue;
+        }
+        total_weight += e->weight;
+    }
+
+    if (total_weight <= 0) {
+        ctx->idle.active_clip = IDLE_CLIP_BLINK;
+        ctx->idle.clip_elapsed_ms = 0;
+        ctx->blink.active = true;
+        ctx->blink.elapsed_ms = 0;
+        ctx->blink.duration_ms = 140;
+        ctx->blink.gap_ms = 0;
+        ctx->blink.repeat_count = 1;
+        ctx->blink.hold_ms = 0;
+        ctx->idle.clip_duration_ms = blink_total_ms(ctx->blink.duration_ms,
+                                                    ctx->blink.hold_ms,
+                                                    ctx->blink.gap_ms,
+                                                    ctx->blink.repeat_count);
+        ctx->idle.since_blink_ms = 0;
+        return;
     }
 
     idle_clip_t chosen = IDLE_CLIP_NONE;
@@ -642,6 +730,12 @@ static void idle_pick_next(struct eldra_eyes_context *ctx)
         int r = (int)(esp_random() % (uint32_t)total_weight);
         for (size_t i = 0; i < sizeof(k_idle_entries) / sizeof(k_idle_entries[0]); ++i) {
             const idle_entry_t *e = &k_idle_entries[i];
+            if (sleepy_active &&
+                (e->clip == IDLE_CLIP_LOOK ||
+                 e->clip == IDLE_CLIP_DOUBLE_BLINK ||
+                 e->clip == IDLE_CLIP_EXTENDED_BLINK)) {
+                continue;
+            }
             if (r < e->weight) {
                 if (e->clip != ctx->idle.last_clip || attempt == 3) {
                     chosen = e->clip;
@@ -941,6 +1035,57 @@ void eldra_eyes_get_lid_depths(uint8_t *sleep_depth, uint8_t *angry_depth)
     if (angry_depth) *angry_depth = angry_v;
 }
 
+void eldra_eyes_set_dizzy_config(const eldra_eyes_dizzy_config_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+
+    dizzy_cfg_t next = {
+        .gyro_thresh_dps = clamp_float(cfg->gyro_thresh_dps, 20.0f, 500.0f),
+        .gyro_spike_dps = clamp_float(cfg->gyro_spike_dps, 30.0f, 1000.0f),
+        .gyro_decay_floor_dps = 0.0f,
+        .gdev_thresh = clamp_float(cfg->gdev_thresh, 0.05f, 1.00f),
+        .accum_ms = (uint32_t)clamp_int((int)cfg->accum_ms, 50, 5000),
+        .cooldown_ms = (uint32_t)clamp_int((int)cfg->cooldown_ms, 250, 60000),
+    };
+
+    if (next.gyro_spike_dps < (next.gyro_thresh_dps + 5.0f)) {
+        next.gyro_spike_dps = next.gyro_thresh_dps + 5.0f;
+    }
+    // Keep decay floor proportional to threshold to preserve hysteresis behavior.
+    next.gyro_decay_floor_dps = clamp_float(next.gyro_thresh_dps * 0.40f, 10.0f, next.gyro_thresh_dps - 1.0f);
+
+    portENTER_CRITICAL(&s_dizzy_cfg_mux);
+    s_dizzy_cfg = next;
+    portEXIT_CRITICAL(&s_dizzy_cfg_mux);
+
+    EL_LOGI(TAG,
+            "Dizzy IMU config set: gyro>=%.1f spike>=%.1f gdev>=%.2f accum=%ums cooldown=%ums",
+            (double)next.gyro_thresh_dps,
+            (double)next.gyro_spike_dps,
+            (double)next.gdev_thresh,
+            (unsigned)next.accum_ms,
+            (unsigned)next.cooldown_ms);
+}
+
+void eldra_eyes_get_dizzy_config(eldra_eyes_dizzy_config_t *out_cfg)
+{
+    if (!out_cfg) {
+        return;
+    }
+    dizzy_cfg_t snap = {0};
+    portENTER_CRITICAL(&s_dizzy_cfg_mux);
+    snap = s_dizzy_cfg;
+    portEXIT_CRITICAL(&s_dizzy_cfg_mux);
+
+    out_cfg->gyro_thresh_dps = snap.gyro_thresh_dps;
+    out_cfg->gyro_spike_dps = snap.gyro_spike_dps;
+    out_cfg->gdev_thresh = snap.gdev_thresh;
+    out_cfg->accum_ms = snap.accum_ms;
+    out_cfg->cooldown_ms = snap.cooldown_ms;
+}
+
 void eldra_eyes_trigger_transform_chibi_to_eldritch(eldra_eyes_context_t *ctx)
 {
     if (!ctx) {
@@ -988,6 +1133,11 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
         dt_ms = 1;
     }
 
+    dizzy_cfg_t dizzy_cfg = {0};
+    portENTER_CRITICAL(&s_dizzy_cfg_mux);
+    dizzy_cfg = s_dizzy_cfg;
+    portEXIT_CRITICAL(&s_dizzy_cfg_mux);
+
     float gyro_mag = sqrtf(gx_dps * gx_dps + gy_dps * gy_dps + gz_dps * gz_dps);
     float accel_mag = sqrtf(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
     float gdev = fabsf(accel_mag - 1.0f);
@@ -997,7 +1147,7 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
     ctx->imu.gyro_ema_dps = (1.0f - alpha) * ctx->imu.gyro_ema_dps + alpha * gyro_mag;
     ctx->imu.accel_ema_g = (1.0f - alpha) * ctx->imu.accel_ema_g + alpha * accel_mag;
 
-    if (ctx->imu.cooldown_ms > 0) {
+    if (!ctx->reactive_dizzy.active && ctx->imu.cooldown_ms > 0) {
         if (ctx->imu.cooldown_ms > dt_ms) {
             ctx->imu.cooldown_ms -= dt_ms;
         } else {
@@ -1010,24 +1160,22 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
      *  - accumulated motion path with decay instead of hard reset.
      */
     if (!ctx->reactive_dizzy.active && ctx->imu.cooldown_ms == 0) {
-        bool instant_spike = (gyro_mag >= k_imu_gyro_dizzy_spike_dps) ||
-                             (gyro_mag >= k_imu_gyro_dizzy_thresh_dps && gdev >= k_imu_gdev_dizzy_thresh);
+        bool instant_spike = (gyro_mag >= dizzy_cfg.gyro_spike_dps) ||
+                             (gyro_mag >= dizzy_cfg.gyro_thresh_dps && gdev >= dizzy_cfg.gdev_thresh);
         if (instant_spike) {
             eldra_eyes_trigger_dizzy(ctx, 0);
             ctx->imu.above_thresh_ms = 0;
-            ctx->imu.cooldown_ms = k_dizzy_cooldown_ms;
             EL_LOGD(TAG, "IMU: Dizzy trigger spike (gyro=%.1f dps gdev=%.2f)",
                     (double)gyro_mag, (double)gdev);
-        } else if (gyro_mag >= k_imu_gyro_dizzy_thresh_dps) {
+        } else if (gyro_mag >= dizzy_cfg.gyro_thresh_dps) {
             ctx->imu.above_thresh_ms += dt_ms;
-            if (ctx->imu.above_thresh_ms >= k_imu_gyro_dizzy_time_ms) {
+            if (ctx->imu.above_thresh_ms >= dizzy_cfg.accum_ms) {
                 eldra_eyes_trigger_dizzy(ctx, 0);
                 ctx->imu.above_thresh_ms = 0;
-                ctx->imu.cooldown_ms = k_dizzy_cooldown_ms;
                 EL_LOGD(TAG, "IMU: Dizzy trigger accumulated (gyro=%.1f dps gdev=%.2f)",
                         (double)gyro_mag, (double)gdev);
             }
-        } else if (gyro_mag < k_imu_gyro_decay_floor_dps) {
+        } else if (gyro_mag < dizzy_cfg.gyro_decay_floor_dps) {
             // Decay toward zero so brief dips don't cancel a near-threshold shake.
             uint32_t decay = dt_ms * 2U;
             if (ctx->imu.above_thresh_ms > decay) {
@@ -1056,8 +1204,8 @@ void eldra_eyes_handle_imu(eldra_eyes_context_t *ctx,
                  (double)ctx->imu.accel_ema_g,
                  (double)roll_deg,
                  (double)pitch_deg,
-                 (double)k_imu_gyro_dizzy_time_ms,
-                 (double)k_imu_gyro_dizzy_thresh_dps,
+                 (double)dizzy_cfg.accum_ms,
+                 (double)dizzy_cfg.gyro_thresh_dps,
                  (unsigned)ctx->imu.cooldown_ms);
         ctx->imu.log_timer_ms = k_imu_log_interval_ms;
     }
@@ -1068,6 +1216,7 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
     if (!ctx) {
         return;
     }
+    const bool sleepy_active = sleepy_visual_active(ctx);
 
     if (ctx->transform_chibi_to_eldritch_active || ctx->transform_eldritch_to_chibi_active) {
         ctx->transform_timer_ms += dt_ms;
@@ -1080,6 +1229,11 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
             ctx->reactive_dizzy.active = false;
             ctx->reactive_dizzy.elapsed_ms = 0;
             ctx->reactive_dizzy.duration_ms = 0;
+            dizzy_cfg_t dizzy_cfg = {0};
+            portENTER_CRITICAL(&s_dizzy_cfg_mux);
+            dizzy_cfg = s_dizzy_cfg;
+            portEXIT_CRITICAL(&s_dizzy_cfg_mux);
+            ctx->imu.cooldown_ms = dizzy_cfg.cooldown_ms; // full refractory window after effect completes
             ctx->idle.idle_gap_ms = 600 + (esp_random() % 400); // settle before next idle
             EL_LOGI(TAG, "Reactive: DIZZY end");
         }
@@ -1087,6 +1241,41 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
 
     /* Breath runs continuously */
     ctx->breath_phase_ms = (ctx->breath_phase_ms + dt_ms) % k_breath_period_ms;
+
+    // In sleepy visual states, suppress look-around and long-hold blink clips.
+    if (sleepy_active) {
+        if (ctx->look.active) {
+            ctx->look.active = false;
+            ctx->look.elapsed_ms = 0;
+            ctx->look.frame_elapsed_ms = 0;
+            ctx->look.frame_index = 0;
+        }
+        if (ctx->idle.active_clip == IDLE_CLIP_LOOK) {
+            ctx->idle.active_clip = IDLE_CLIP_NONE;
+            ctx->idle.clip_elapsed_ms = 0;
+            ctx->idle.clip_duration_ms = 0;
+            ctx->idle.idle_gap_ms = 120;
+        } else if (ctx->idle.active_clip == IDLE_CLIP_DOUBLE_BLINK ||
+                   ctx->idle.active_clip == IDLE_CLIP_EXTENDED_BLINK) {
+            ctx->idle.active_clip = IDLE_CLIP_BLINK;
+            ctx->idle.clip_elapsed_ms = 0;
+            ctx->blink.active = true;
+            ctx->blink.elapsed_ms = 0;
+            ctx->blink.duration_ms = 140;
+            ctx->blink.gap_ms = 0;
+            ctx->blink.repeat_count = 1;
+            ctx->blink.hold_ms = 0;
+            ctx->idle.clip_duration_ms = blink_total_ms(ctx->blink.duration_ms,
+                                                        ctx->blink.hold_ms,
+                                                        ctx->blink.gap_ms,
+                                                        ctx->blink.repeat_count);
+        } else if (ctx->blink.active && ctx->blink.hold_ms > 0) {
+            ctx->blink.hold_ms = 0;
+            if (ctx->blink.duration_ms > 180U) {
+                ctx->blink.duration_ms = 140;
+            }
+        }
+    }
 
     /* Idle clip manager for blink/look */
     if (ctx->idle.active_clip == IDLE_CLIP_NONE && !ctx->reactive_dizzy.active) {
@@ -1103,7 +1292,7 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
 
         // Failsafe cadence: never let random idle selection suppress blink/look
         // for long stretches.
-        if (ctx->idle.since_look_ms >= k_idle_force_look_ms) {
+        if (!sleepy_active && ctx->idle.since_look_ms >= k_idle_force_look_ms) {
             ctx->idle.idle_gap_ms = 0;
             ctx->idle.last_clip = IDLE_CLIP_NONE;
             ctx->idle.active_clip = IDLE_CLIP_NONE;
@@ -1125,7 +1314,7 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
                 ctx->idle.since_look_ms = 0;
                 EL_LOGD(TAG, "Idle forced: LOOK dir=%s", (ctx->look.direction >= 0) ? "RIGHT" : "LEFT");
             }
-        } else if (ctx->idle.since_blink_ms >= k_idle_force_blink_ms) {
+        } else if (ctx->idle.since_blink_ms >= (sleepy_active ? k_idle_force_blink_sleepy_ms : k_idle_force_blink_ms)) {
             ctx->idle.active_clip = IDLE_CLIP_BLINK;
             ctx->idle.clip_elapsed_ms = 0;
             ctx->look.active = false;
@@ -1161,7 +1350,10 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
             if (ctx->idle.last_clip == IDLE_CLIP_BLINK ||
                 ctx->idle.last_clip == IDLE_CLIP_DOUBLE_BLINK ||
                 ctx->idle.last_clip == IDLE_CLIP_EXTENDED_BLINK) {
-                if (ctx->idle.last_clip == IDLE_CLIP_EXTENDED_BLINK) {
+                if (sleepy_active) {
+                    // In sleepy visuals, keep blinks rare and gentle.
+                    ctx->idle.idle_gap_ms = 8000 + (esp_random() % 4000); // 8-12 seconds
+                } else if (ctx->idle.last_clip == IDLE_CLIP_EXTENDED_BLINK) {
                     ctx->idle.idle_gap_ms = 90000 + (esp_random() % 60000); // 1.5-2.5 minutes
                 } else if (ctx->idle.last_clip == IDLE_CLIP_DOUBLE_BLINK) {
                     ctx->idle.idle_gap_ms = 30000 + (esp_random() % 20000); // 30-50 seconds
@@ -1169,7 +1361,9 @@ void eldra_eyes_update(eldra_eyes_context_t *ctx, uint32_t dt_ms)
                     ctx->idle.idle_gap_ms = 600 + (esp_random() % 400); // 0.6-1.0s
                 }
             } else {
-                ctx->idle.idle_gap_ms = 600 + (esp_random() % 400); // 0.6-1.0s between looks
+                ctx->idle.idle_gap_ms = sleepy_active
+                    ? (8000 + (esp_random() % 4000)) // 8-12 seconds in sleepy mode
+                    : (600 + (esp_random() % 400));  // 0.6-1.0s between looks
             }
             /* End any clip-specific state */
             ctx->blink.active = false;
@@ -1317,21 +1511,12 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
     const bool mod_angry_base = (ctx->mood == ELDRA_EYES_MOOD_ANGRY);
 
     // Layering model:
-    // 1) sleep countdown heavy (final 60s) wins and stays rounded/hooded.
+    // 1) sleep countdown heavy wins and stays rounded/hooded.
     // 2) otherwise apply sleepy need as a lighter lid.
     // 3) angry base mood remains available, including angry+sleepy blend.
     if (!reactive_dizzy && !ctx->blink.active) {
         if (ctx->sleep_lid_heavy) {
-            int lid_depth = (int)sleep_lid_depth;
-            if (breath_enabled) {
-                if (breath_wave > 0.30f) {
-                    lid_depth += 1;
-                } else if (breath_wave < -0.30f) {
-                    lid_depth -= 1;
-                }
-            }
-            build_tired_frame(eye_frame, tired_frame, (uint8_t)clamp_int(lid_depth, 0, 6), false);
-            blink_frame = tired_frame;
+            blink_frame = k_eye_frame_sleepy_heavy;
             left_y0 += 1;
             right_y0 += 1;
         } else if (mod_angry_base && mod_sleepy) {
@@ -1343,9 +1528,7 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
             scale_y_left = clamp_int(scale_y_left - 1, 1, 255);
             scale_y_right = clamp_int(scale_y_right - 1, 1, 255);
         } else if (mod_sleepy) {
-            uint8_t light_depth = (uint8_t)clamp_int((int)sleep_lid_depth - 1, 0, 6);
-            build_tired_frame(eye_frame, tired_frame, light_depth, false);
-            blink_frame = tired_frame;
+            blink_frame = k_eye_frame_sleepy_half;
             left_y0 += 1;
             right_y0 += 1;
         } else if (mod_angry_base) {

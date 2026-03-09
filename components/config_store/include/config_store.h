@@ -44,6 +44,11 @@ typedef struct {
     int angry_dizzy_window_ms;       // rolling dizzy burst window in ms
     int angry_override_min_ms;       // timed angry hold minimum in ms
     int angry_override_max_ms;       // timed angry hold maximum in ms
+    int dizzy_gyro_thresh_dps_x10;   // IMU dizzy trigger gyro threshold (dps * 10)
+    int dizzy_gyro_spike_dps_x10;    // IMU dizzy trigger spike threshold (dps * 10)
+    int dizzy_gdev_x100;             // IMU dizzy trigger accel deviation (gdev * 100)
+    int dizzy_accum_ms;              // IMU dizzy accumulated threshold duration (ms)
+    int dizzy_cooldown_ms;           // IMU dizzy post-trigger cooldown (ms)
     int mood_happiness;            // -1 means unused
     int mood_hunger;
     int mood_energy;

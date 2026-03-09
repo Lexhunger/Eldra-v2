@@ -32,6 +32,48 @@ static int clamp_weight_pct(int v)
     return v;
 }
 
+static bool parse_float_arg(const char *s, float *out)
+{
+    if (!s || !out) {
+        return false;
+    }
+    char *end = NULL;
+    float v = strtof(s, &end);
+    if (end == s || *end != '\0') {
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+static int round_to_int(float v, float scale)
+{
+    float scaled = v * scale;
+    return (int)(scaled + ((scaled >= 0.0f) ? 0.5f : -0.5f));
+}
+
+static void persist_dizzy_cfg(const eldra_eyes_dizzy_config_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    config_store_t persisted = {0};
+    if (config_store_load(&persisted) != ESP_OK) {
+        printf("Dizzy config applied (config load failed; not persisted)\n");
+        return;
+    }
+    persisted.dizzy_gyro_thresh_dps_x10 = round_to_int(cfg->gyro_thresh_dps, 10.0f);
+    persisted.dizzy_gyro_spike_dps_x10 = round_to_int(cfg->gyro_spike_dps, 10.0f);
+    persisted.dizzy_gdev_x100 = round_to_int(cfg->gdev_thresh, 100.0f);
+    persisted.dizzy_accum_ms = (int)cfg->accum_ms;
+    persisted.dizzy_cooldown_ms = (int)cfg->cooldown_ms;
+    if (config_store_save(&persisted) != ESP_OK) {
+        printf("Dizzy config applied (persist failed)\n");
+    } else {
+        printf("Dizzy config persisted\n");
+    }
+}
+
 static void print_affect_weights(void)
 {
     emotion_affect_weights_t w = {0};
@@ -305,6 +347,194 @@ static int cmd_eyes_sleep_force(int argc, char **argv)
     eldra_set_sleep_eye_override(mode);
     const char *name = (mode == 0U) ? "off" : (mode == 1U) ? "light" : "heavy";
     printf("Sleep-eye override set: %s (%u)\n", name, (unsigned)mode);
+    return 0;
+}
+
+static void print_dizzy_cfg(void)
+{
+    eldra_eyes_dizzy_config_t cfg = {0};
+    eldra_eyes_get_dizzy_config(&cfg);
+    printf("Dizzy IMU config: gyro_thresh=%.1f dps spike=%.1f dps gdev=%.2f accum=%u ms cooldown=%u ms\n",
+           (double)cfg.gyro_thresh_dps,
+           (double)cfg.gyro_spike_dps,
+           (double)cfg.gdev_thresh,
+           (unsigned)cfg.accum_ms,
+           (unsigned)cfg.cooldown_ms);
+}
+
+static int cmd_eyes_dizzy(int argc, char **argv)
+{
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        print_dizzy_cfg();
+        printf("Usage: eyes_dizzy status\n");
+        printf("   or: eyes_dizzy preset <easy|normal|hard> [persist|temp]\n");
+        printf("   or: eyes_dizzy <gyro_thresh|spike|gdev|accum_ms|cooldown_ms> <value> [persist|temp]\n");
+        printf("   or: eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]\n");
+        return 0;
+    }
+
+    eldra_eyes_dizzy_config_t cfg = {0};
+    eldra_eyes_get_dizzy_config(&cfg);
+
+    if (strcasecmp(argv[1], "preset") == 0) {
+        if (argc < 3) {
+            printf("Usage: eyes_dizzy preset <easy|normal|hard> [persist|temp]\n");
+            return 0;
+        }
+        bool persist = true;
+        if (argc >= 4) {
+            if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+                persist = false;
+            } else if (strcasecmp(argv[3], "persist") == 0) {
+                persist = true;
+            } else {
+                printf("Invalid mode '%s'. Use persist|temp\n", argv[3]);
+                return 0;
+            }
+        }
+        if (strcasecmp(argv[2], "easy") == 0) {
+            cfg.gyro_thresh_dps = 55.0f;
+            cfg.gyro_spike_dps = 120.0f;
+            cfg.gdev_thresh = 0.26f;
+            cfg.accum_ms = 150U;
+            cfg.cooldown_ms = 3500U;
+        } else if (strcasecmp(argv[2], "normal") == 0) {
+            cfg.gyro_thresh_dps = 65.0f;
+            cfg.gyro_spike_dps = 145.0f;
+            cfg.gdev_thresh = 0.30f;
+            cfg.accum_ms = 220U;
+            cfg.cooldown_ms = 4500U;
+        } else if (strcasecmp(argv[2], "hard") == 0) {
+            cfg.gyro_thresh_dps = 80.0f;
+            cfg.gyro_spike_dps = 180.0f;
+            cfg.gdev_thresh = 0.38f;
+            cfg.accum_ms = 300U;
+            cfg.cooldown_ms = 6000U;
+        } else {
+            printf("Unknown preset '%s'. Use easy|normal|hard\n", argv[2]);
+            return 0;
+        }
+        eldra_eyes_set_dizzy_config(&cfg);
+        if (persist) {
+            persist_dizzy_cfg(&cfg);
+        }
+        print_dizzy_cfg();
+        return 0;
+    }
+
+    if (argc >= 3 &&
+        strcasecmp(argv[1], "set") != 0 &&
+        strcasecmp(argv[1], "preset") != 0) {
+        bool persist = true;
+        if (argc >= 4) {
+            if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+                persist = false;
+            } else if (strcasecmp(argv[3], "persist") == 0) {
+                persist = true;
+            } else {
+                printf("Invalid mode '%s'. Use persist|temp\n", argv[3]);
+                return 0;
+            }
+        }
+
+        const char *field = argv[1];
+        if (strcasecmp(field, "gyro_thresh") == 0 || strcasecmp(field, "gyro") == 0 ||
+            strcasecmp(field, "thresh") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for gyro_thresh\n", argv[2]);
+                return 0;
+            }
+            cfg.gyro_thresh_dps = v;
+        } else if (strcasecmp(field, "spike") == 0 || strcasecmp(field, "gyro_spike") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for spike\n", argv[2]);
+                return 0;
+            }
+            cfg.gyro_spike_dps = v;
+        } else if (strcasecmp(field, "gdev") == 0 || strcasecmp(field, "g") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for gdev\n", argv[2]);
+                return 0;
+            }
+            cfg.gdev_thresh = v;
+        } else if (strcasecmp(field, "accum_ms") == 0 || strcasecmp(field, "accum") == 0) {
+            int v = (int)strtol(argv[2], NULL, 10);
+            if (v <= 0) {
+                printf("Invalid value '%s' for accum_ms\n", argv[2]);
+                return 0;
+            }
+            cfg.accum_ms = (uint32_t)v;
+        } else if (strcasecmp(field, "cooldown_ms") == 0 || strcasecmp(field, "cooldown") == 0) {
+            int v = (int)strtol(argv[2], NULL, 10);
+            if (v <= 0) {
+                printf("Invalid value '%s' for cooldown_ms\n", argv[2]);
+                return 0;
+            }
+            cfg.cooldown_ms = (uint32_t)v;
+        } else {
+            printf("Unknown field '%s'. Use gyro_thresh|spike|gdev|accum_ms|cooldown_ms\n", field);
+            return 0;
+        }
+
+        eldra_eyes_set_dizzy_config(&cfg);
+        if (persist) {
+            persist_dizzy_cfg(&cfg);
+        }
+        print_dizzy_cfg();
+        return 0;
+    }
+
+    int value_index = 1;
+    if (strcasecmp(argv[1], "set") == 0) {
+        value_index = 2;
+    }
+    if ((argc - value_index) < 5) {
+        printf("Usage: eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]\n");
+        return 0;
+    }
+
+    float gyro_thresh = 0.0f;
+    float spike = 0.0f;
+    float gdev = 0.0f;
+    if (!parse_float_arg(argv[value_index + 0], &gyro_thresh) ||
+        !parse_float_arg(argv[value_index + 1], &spike) ||
+        !parse_float_arg(argv[value_index + 2], &gdev)) {
+        printf("Invalid numeric argument. Example: eyes_dizzy set 70 160 0.35 250 5000\n");
+        return 0;
+    }
+
+    int accum_ms = (int)strtol(argv[value_index + 3], NULL, 10);
+    int cooldown_ms = (int)strtol(argv[value_index + 4], NULL, 10);
+    if (accum_ms <= 0 || cooldown_ms <= 0) {
+        printf("accum_ms and cooldown_ms must be > 0\n");
+        return 0;
+    }
+    bool persist = true;
+    if ((argc - value_index) >= 6) {
+        const char *mode = argv[value_index + 5];
+        if (strcasecmp(mode, "temp") == 0 || strcasecmp(mode, "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(mode, "persist") == 0) {
+            persist = true;
+        } else {
+            printf("Invalid mode '%s'. Use persist|temp\n", mode);
+            return 0;
+        }
+    }
+
+    cfg.gyro_thresh_dps = gyro_thresh;
+    cfg.gyro_spike_dps = spike;
+    cfg.gdev_thresh = gdev;
+    cfg.accum_ms = (uint32_t)accum_ms;
+    cfg.cooldown_ms = (uint32_t)cooldown_ms;
+    eldra_eyes_set_dizzy_config(&cfg);
+    if (persist) {
+        persist_dizzy_cfg(&cfg);
+    }
+    print_dizzy_cfg();
     return 0;
 }
 
@@ -654,6 +884,14 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
         .func = &cmd_eyes_sleep_force,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&sleep_force_cmd), TAG, "register eyes_sleep_force failed");
+
+    const esp_console_cmd_t eyes_dizzy_cmd = {
+        .command = "eyes_dizzy",
+        .help = "Tune IMU dizzy sensitivity. Usage: eyes_dizzy status | eyes_dizzy preset <easy|normal|hard> [persist|temp] | eyes_dizzy <field> <value> [persist|temp] | eyes_dizzy set <gyro_thresh> <spike> <gdev> <accum_ms> <cooldown_ms> [persist|temp]",
+        .hint = NULL,
+        .func = &cmd_eyes_dizzy,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&eyes_dizzy_cmd), TAG, "register eyes_dizzy failed");
 
     const esp_console_cmd_t disp_center_cmd = {
         .command = "disp_center",
