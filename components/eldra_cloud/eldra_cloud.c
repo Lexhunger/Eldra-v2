@@ -1,4 +1,5 @@
 #include "eldra_cloud.h"
+#include "eldra_logging.h"
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@
 #define ELDRA_CLOUD_HEALTH_GRACE_MS          5000
 #define ELDRA_CLOUD_HEALTH_BACKOFF_MS        120000
 #define ELDRA_CLOUD_HEALTH_FAIL_MAX          3
+#define ELDRA_CLOUD_MUTEX_WAIT_MS            5
 
 #define ELDRA_CLOUD_LOG_BUFFER_SIZE 64
 #define ELDRA_CLOUD_HEALTH_URL      "/api/health"
@@ -222,7 +224,7 @@ static bool http_get_json(const char *url, char *resp, size_t resp_size)
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        ESP_LOGE(TAG, "Failed to init HTTP client for GET");
+        EL_LOGE(TAG, "Failed to init HTTP client for GET");
         return false;
     }
 
@@ -235,14 +237,14 @@ static bool http_get_json(const char *url, char *resp, size_t resp_size)
     int64_t elapsed_ms = (esp_timer_get_time() - t_start) / 1000;
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP GET error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
+        EL_LOGE(TAG, "HTTP GET error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
         return false;
     }
     if (status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "HTTP GET unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
+        EL_LOGW(TAG, "HTTP GET unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
         return false;
     }
-    ESP_LOGI(TAG, "HTTP GET ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
+    EL_LOGI(TAG, "HTTP GET ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
     return true;
 }
 
@@ -268,7 +270,7 @@ static bool http_post_json(const char *url, const char *body, char *resp, size_t
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        ESP_LOGE(TAG, "Failed to init HTTP client for POST");
+        EL_LOGE(TAG, "Failed to init HTTP client for POST");
         return false;
     }
 
@@ -284,14 +286,14 @@ static bool http_post_json(const char *url, const char *body, char *resp, size_t
     int64_t elapsed_ms = (esp_timer_get_time() - t_start) / 1000;
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP POST error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
+        EL_LOGE(TAG, "HTTP POST error: %s (elapsed=%lldms)", esp_err_to_name(err), (long long)elapsed_ms);
         return false;
     }
     if (status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "HTTP POST unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
+        EL_LOGW(TAG, "HTTP POST unexpected status: %d (elapsed=%lldms)", status, (long long)elapsed_ms);
         return false;
     }
-    ESP_LOGI(TAG, "HTTP POST ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
+    EL_LOGI(TAG, "HTTP POST ok status=%d elapsed=%lldms", status, (long long)elapsed_ms);
     return true;
 }
 
@@ -311,13 +313,13 @@ static bool fetch_and_dispatch_command(void)
 
     cJSON *root = cJSON_Parse(resp);
     if (!root) {
-        ESP_LOGW(TAG, "Failed to parse command response");
+        EL_LOGW(TAG, "Failed to parse command response");
         return false;
     }
 
     cJSON *cmd_obj = cJSON_GetObjectItemCaseSensitive(root, "command");
     if (!cmd_obj || cJSON_IsNull(cmd_obj)) {
-        ESP_LOGD(TAG, "No command available");
+        EL_LOGD(TAG, "No command available");
         s_last_cmd_ok = true;
         s_last_cmd_time_ms = esp_timer_get_time() / 1000;
         cJSON_Delete(root);
@@ -330,7 +332,7 @@ static bool fetch_and_dispatch_command(void)
     cJSON *arg1 = cJSON_GetObjectItemCaseSensitive(cmd_obj, "arg1");
 
     if (!cJSON_IsString(id) || !cJSON_IsString(type)) {
-        ESP_LOGW(TAG, "Command missing id or type");
+        EL_LOGW(TAG, "Command missing id or type");
         cJSON_Delete(root);
         s_last_cmd_ok = false;
         s_last_cmd_time_ms = esp_timer_get_time() / 1000;
@@ -347,7 +349,7 @@ static bool fetch_and_dispatch_command(void)
         s_cmd_handler(&cmd);
         s_last_cmd_ok = true;
     } else {
-        ESP_LOGW(TAG, "Command received but no handler registered");
+        EL_LOGW(TAG, "Command received but no handler registered");
         s_last_cmd_ok = false;
     }
     s_last_cmd_time_ms = esp_timer_get_time() / 1000;
@@ -362,7 +364,7 @@ static bool send_pending_ack(void)
     bool ack_ok = false;
     bool has_pending = false;
 
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         if (s_ack_pending) {
             strncpy(id_copy, s_ack_id, sizeof(id_copy) - 1);
             strncpy(details_copy, s_ack_details, sizeof(details_copy) - 1);
@@ -399,7 +401,7 @@ static bool send_pending_ack(void)
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
 
-    if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         s_ack_pending = false;
         s_ack_id[0] = '\0';
         s_ack_details[0] = '\0';
@@ -415,7 +417,7 @@ static bool push_state_snapshot(void)
     char emotion_copy[sizeof(s_state_emotion)];
     bool has_state = false;
 
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         if (s_state_valid) {
             state = s_state_cache;
             strncpy(emotion_copy, s_state_emotion, sizeof(emotion_copy) - 1);
@@ -491,7 +493,7 @@ static bool flush_logs(void)
         return false;
     }
 
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         if (s_log_count > 0) {
             to_send = (s_log_count < ELDRA_CLOUD_LOG_FLUSH_BATCH) ? s_log_count : ELDRA_CLOUD_LOG_FLUSH_BATCH;
             size_t tail = (s_log_head + ELDRA_CLOUD_LOG_BUFFER_SIZE - s_log_count) % ELDRA_CLOUD_LOG_BUFFER_SIZE;
@@ -540,7 +542,7 @@ static bool flush_logs(void)
     bool ok = http_post_json(url, body, NULL, 0);
     free(body);
 
-    if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         if (s_log_count >= to_send) {
             s_log_count -= to_send;
         } else {
@@ -559,7 +561,7 @@ static bool should_run_now(void)
     }
     bool asleep = false;
     bool low_power = false;
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         asleep = s_state_valid && s_state_cache.flag_asleep;
         low_power = s_state_valid && s_state_cache.flag_low_power;
         xSemaphoreGive(s_mutex);
@@ -575,11 +577,11 @@ static bool check_health(void)
     char url[192];
     snprintf(url, sizeof(url), "%s%s", s_base_url, ELDRA_CLOUD_HEALTH_URL);
     char resp[ELDRA_CLOUD_RESP_BUFFER_SIZE];
-    ESP_LOGI(TAG, "Health check start url=%s", url);
+    EL_LOGI(TAG, "Health check start url=%s", url);
     bool ok = http_get_json(url, resp, sizeof(resp));
-    ESP_LOGI(TAG, "Health check %s", ok ? "OK" : "FAILED");
+    EL_LOGI(TAG, "Health check %s", ok ? "OK" : "FAILED");
     if (resp[0]) {
-        ESP_LOGD(TAG, "Health body: %s", resp);
+        EL_LOGD(TAG, "Health body: %s", resp);
     }
     if (ok) {
         s_health_ok = true;
@@ -592,7 +594,7 @@ static bool check_health(void)
 
 static void mark_offline_with_backoff(void)
 {
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         s_online = false;
         s_health_elapsed = 0;
         s_health_grace = ELDRA_CLOUD_HEALTH_BACKOFF_MS;
@@ -601,7 +603,7 @@ static void mark_offline_with_backoff(void)
         }
         xSemaphoreGive(s_mutex);
     }
-    ESP_LOGW(TAG, "Cloud marked offline (failures=%d)", s_health_failures);
+    EL_LOGW(TAG, "Cloud marked offline (failures=%d)", s_health_failures);
 }
 
 static void log_ping_result(void)
@@ -620,11 +622,11 @@ static void log_ping_result(void)
     }
     parsed[i] = '\0';
     if (parsed[0] == '\0') {
-        ESP_LOGW(TAG, "Ping skipped (no host parsed)");
+        EL_LOGW(TAG, "Ping skipped (no host parsed)");
         return;
     }
     esp_err_t ping = wifi_driver_ping(parsed, 1, 1000);
-    ESP_LOGW(TAG, "Ping %s -> %s", parsed, (ping == ESP_OK) ? "OK" : esp_err_to_name(ping));
+    EL_LOGW(TAG, "Ping %s -> %s", parsed, (ping == ESP_OK) ? "OK" : esp_err_to_name(ping));
 }
 
 static void log_enqueue(const char *level, const char *tag, const char *msg)
@@ -639,7 +641,7 @@ static void log_enqueue(const char *level, const char *tag, const char *msg)
     strncpy(entry.tag, tag, sizeof(entry.tag) - 1);
     strncpy(entry.msg, msg, sizeof(entry.msg) - 1);
 
-    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         s_log_buffer[s_log_head] = entry;
         s_log_head = (s_log_head + 1) % ELDRA_CLOUD_LOG_BUFFER_SIZE;
         if (s_log_count < ELDRA_CLOUD_LOG_BUFFER_SIZE) {
@@ -654,7 +656,7 @@ static void eldra_cloud_task(void *arg)
     int64_t poll_elapsed = 0;
     int64_t state_elapsed = 0;
     int64_t log_elapsed = 0;
-    ESP_LOGI(TAG, "Cloud task loop started");
+    EL_LOGI(TAG, "Cloud task loop started");
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(ELDRA_CLOUD_TASK_DELAY_MS));
@@ -666,23 +668,23 @@ static void eldra_cloud_task(void *arg)
 
         if (!s_online) {
             if (!s_online_requested) {
-                ESP_LOGD(TAG, "Cloud offline and not requested; skipping");
+                EL_LOGD(TAG, "Cloud offline and not requested; skipping");
                 continue;
             }
             if (s_health_grace > 0) {
                 s_health_grace -= ELDRA_CLOUD_TASK_DELAY_MS;
-                ESP_LOGD(TAG, "Cloud offline; grace %lldms remaining", (long long)s_health_grace);
+                EL_LOGD(TAG, "Cloud offline; grace %lldms remaining", (long long)s_health_grace);
                 continue;
             }
             if (s_health_elapsed >= ELDRA_CLOUD_HEALTH_RETRY_MS && should_run_now()) {
                 if (s_health_failures >= ELDRA_CLOUD_HEALTH_FAIL_MAX) {
-                    ESP_LOGW(TAG, "Health retries exceeded; backoff");
+                    EL_LOGW(TAG, "Health retries exceeded; backoff");
                     mark_offline_with_backoff();
                     continue;
                 }
-                ESP_LOGI(TAG, "Cloud offline; retrying health");
+                EL_LOGI(TAG, "Cloud offline; retrying health");
                 bool ok = check_health();
-                if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                if (ok && s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
                     s_online = true;
                     s_health_failures = 0;
                     xSemaphoreGive(s_mutex);
@@ -694,35 +696,35 @@ static void eldra_cloud_task(void *arg)
                 }
                 s_health_elapsed = 0;
             } else {
-                ESP_LOGD(TAG, "Cloud offline; skipping cycle");
+                EL_LOGD(TAG, "Cloud offline; skipping cycle");
             }
             continue;
         }
 
         if (!should_run_now()) {
-            ESP_LOGD(TAG, "Cloud skip: asleep/low_power");
+            EL_LOGD(TAG, "Cloud skip: asleep/low_power");
             continue;
         }
 
         if (s_ack_pending) {
-            ESP_LOGD(TAG, "Cloud sending pending ACK id=%s ok=%d", s_ack_id, s_ack_ok);
+            EL_LOGD(TAG, "Cloud sending pending ACK id=%s ok=%d", s_ack_id, s_ack_ok);
             send_pending_ack();
         }
 
         if (s_poll_interval_ms > 0 && poll_elapsed >= s_poll_interval_ms) {
-            ESP_LOGD(TAG, "Cloud poll commands");
+            EL_LOGD(TAG, "Cloud poll commands");
             fetch_and_dispatch_command();
             poll_elapsed = 0;
         }
 
         if (s_state_interval_ms > 0 && state_elapsed >= s_state_interval_ms) {
-            ESP_LOGD(TAG, "Cloud push state");
+            EL_LOGD(TAG, "Cloud push state");
             push_state_snapshot();
             state_elapsed = 0;
         }
 
         if (s_log_interval_ms > 0 && log_elapsed >= s_log_interval_ms) {
-            ESP_LOGD(TAG, "Cloud flush logs");
+            EL_LOGD(TAG, "Cloud flush logs");
             flush_logs();
             log_elapsed = 0;
         }
@@ -752,12 +754,12 @@ void eldra_cloud_init(const char *base_url, const char *auth_token)
     if (!s_task_handle) {
         BaseType_t res = xTaskCreate(eldra_cloud_task, "eldra_cloud", 6144, NULL, 3, &s_task_handle);
         if (res != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create cloud task");
+            EL_LOGE(TAG, "Failed to create cloud task");
         }
     }
 
     s_initialized = true;
-    ESP_LOGI(TAG, "eldra_cloud initialized");
+    EL_LOGI(TAG, "eldra_cloud initialized");
 }
 
 void eldra_cloud_set_online(bool online)
@@ -765,7 +767,7 @@ void eldra_cloud_set_online(bool online)
     if (!s_initialized) {
         return;
     }
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         s_online = false;
         s_online_requested = online;
         s_health_elapsed = 0;
@@ -776,7 +778,7 @@ void eldra_cloud_set_online(bool online)
         }
         xSemaphoreGive(s_mutex);
     }
-    ESP_LOGI(TAG, "Network %s (lazy health)", online ? "online" : "offline");
+    EL_LOGI(TAG, "Network %s (lazy health)", online ? "online" : "offline");
 }
 
 bool eldra_cloud_health_check(void)
@@ -798,7 +800,7 @@ void eldra_cloud_ack_command(const eldra_command_t *cmd, bool ok, const char *de
         return;
     }
 
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         strncpy(s_ack_id, cmd->id, sizeof(s_ack_id) - 1);
         s_ack_id[sizeof(s_ack_id) - 1] = '\0';
         s_ack_ok = ok;
@@ -818,7 +820,7 @@ void eldra_cloud_set_state(const eldra_state_t *state)
     if (!s_initialized || !state) {
         return;
     }
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         if (state->emotion_state) {
             strncpy(s_state_emotion, state->emotion_state, sizeof(s_state_emotion) - 1);
             s_state_emotion[sizeof(s_state_emotion) - 1] = '\0';
@@ -852,13 +854,13 @@ void eldra_cloud_log(const char *level, const char *tag, const char *msg)
 
     if (s_console_logs_enabled) {
         if (str_ieq(lvl, "DEBUG")) {
-            ESP_LOGD(log_tag, "%s", message);
+            EL_LOGD(log_tag, "%s", message);
         } else if (str_ieq(lvl, "WARN")) {
-            ESP_LOGW(log_tag, "%s", message);
+            EL_LOGW(log_tag, "%s", message);
         } else if (str_ieq(lvl, "ERROR")) {
-            ESP_LOGE(log_tag, "%s", message);
+            EL_LOGE(log_tag, "%s", message);
         } else {
-            ESP_LOGI(log_tag, "%s", message);
+            EL_LOGI(log_tag, "%s", message);
         }
     }
 
@@ -889,7 +891,7 @@ void eldra_cloud_set_intervals(int poll_interval_ms, int state_interval_ms, int 
 void eldra_cloud_get_status(eldra_cloud_status_t *out)
 {
     if (!out) return;
-    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(ELDRA_CLOUD_MUTEX_WAIT_MS)) == pdTRUE) {
         out->online_requested = s_online_requested;
         out->online = s_online;
         out->last_health_ok = s_last_health_ok;
@@ -906,3 +908,4 @@ void eldra_cloud_get_status(eldra_cloud_status_t *out)
         xSemaphoreGive(s_mutex);
     }
 }
+

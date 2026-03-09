@@ -1,4 +1,5 @@
 #include "SD_MMC.h"
+#include "eldra_logging.h"
 
 #define EXAMPLE_MAX_CHAR_SIZE    64
 #define MOUNT_POINT "/sdcard"
@@ -22,25 +23,25 @@ esp_err_t SD_Card_D3_Dis(void)
 
 esp_err_t s_example_write_file(const char *path, char *data)
 {
-    ESP_LOGI(SD_TAG, "Opening file %s", path);
+    EL_LOGI(SD_TAG, "Opening file %s", path);
     FILE *f = fopen(path, "w");
     if (f == NULL) {
-        ESP_LOGE(SD_TAG, "Failed to open file for writing");
+        EL_LOGE(SD_TAG, "Failed to open file for writing");
         return ESP_FAIL;
     }
     fprintf(f, data);
     fclose(f);
-    ESP_LOGI(SD_TAG, "File written");
+    EL_LOGI(SD_TAG, "File written");
 
     return ESP_OK;
 }
 
 esp_err_t s_example_read_file(const char *path)
 {
-    ESP_LOGI(SD_TAG, "Reading file %s", path);
+    EL_LOGI(SD_TAG, "Reading file %s", path);
     FILE *f = fopen(path, "r");
     if (f == NULL) {
-        ESP_LOGE(SD_TAG, "Failed to open file for reading");
+        EL_LOGE(SD_TAG, "Failed to open file for reading");
         return ESP_FAIL;
     }
     char line[EXAMPLE_MAX_CHAR_SIZE];
@@ -52,7 +53,7 @@ esp_err_t s_example_read_file(const char *path)
     if (pos) {
         *pos = '\0';
     }
-    ESP_LOGI(SD_TAG, "Read from file: '%s'", line);
+    EL_LOGI(SD_TAG, "Read from file: '%s'", line);
 
     return ESP_OK;
 }
@@ -71,12 +72,12 @@ void SD_Init(void)
     };
     sdmmc_card_t *card;
     const char mount_point[] = MOUNT_POINT;
-    ESP_LOGI(SD_TAG, "Initializing SD card");
+    EL_LOGI(SD_TAG, "Initializing SD card");
 
     // Use settings defined above to initialize SD card and mount FAT filesystem.
     // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
     // Please check its source code and implement error recovery when developing production applications.
-    ESP_LOGI(SD_TAG, "Using SPI peripheral");
+    EL_LOGI(SD_TAG, "Using SPI peripheral");
 
     // By default, SD card frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
     // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 20MHz for SDSPI)
@@ -102,20 +103,20 @@ void SD_Init(void)
 
 
 
-    ESP_LOGI(SD_TAG, "Mounting filesystem");
+    EL_LOGI(SD_TAG, "Mounting filesystem");
     ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
 
     if (ret != ESP_OK) {
         if (ret == ESP_FAIL) {
-            ESP_LOGE(SD_TAG, "Failed to mount filesystem. "
+            EL_LOGE(SD_TAG, "Failed to mount filesystem. "
                      "If you want the card to be formatted, set the CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
         } else {
-            ESP_LOGE(SD_TAG, "Failed to initialize the card (%s). "
+            EL_LOGE(SD_TAG, "Failed to initialize the card (%s). "
                      "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
         }
         return;
     }
-    ESP_LOGI(SD_TAG, "Filesystem mounted");
+    EL_LOGI(SD_TAG, "Filesystem mounted");
 
     // Card has been initialized, print its properties
     sdmmc_card_print_info(stdout, card);

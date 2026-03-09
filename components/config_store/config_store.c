@@ -1,4 +1,7 @@
 #include "config_store.h"
+#include "eye_offsets_nvs.h"
+#include "mood_nvs.h"
+#include "eldra_logging.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +15,7 @@
 
 #define CONFIG_DIR  "/sdcard/CONFIG"
 #define CONFIG_PATH "/sdcard/CONFIG/CONFIG.CFG"
+#define WIFI_CFG_PATH "/sdcard/WIFI/WIFI.CFG"
 
 static const char *TAG = "config_store";
 
@@ -20,6 +24,16 @@ static void ensure_dir(const char *path)
     if (path) {
         mkdir(path, 0775);
     }
+}
+
+static inline void config_io_begin(void)
+{
+    eldra_platform_before_sd_io();
+}
+
+static inline void config_io_end(void)
+{
+    eldra_platform_after_sd_io();
 }
 
 void config_store_get_defaults(config_store_t *out)
@@ -40,14 +54,37 @@ void config_store_get_defaults(config_store_t *out)
     out->cloud_poll_interval_ms = 40000;
     out->cloud_state_interval_ms = 60000;
     out->cloud_log_interval_ms = 30000;
-    // Default display offset tuned for the round ST7701S panel from the demo build.
-    out->eyes_center_x_offset = 20;
+    // Default to true center; user-calibration will override and persist.
+    out->eyes_center_x_offset = 0;
     out->eyes_center_y_offset = 0;
     out->display_center_x_offset = 0;
     out->display_center_y_offset = 0;
+    out->glyph_offset_x = 0;
+    out->glyph_offset_y = -170; // place near top outer-edge by default (center-based layout)
+    out->glyph_scale = 2;
+    out->sleep_lid_depth = 2;
+    out->angry_lid_depth = 2;
     out->sleep_start_hour = 22;
     out->sleep_end_hour = 8;
-    out->mood_log_interval_minutes = 20; // log meters every 20 minutes by default
+    out->sleep_window_inactivity_ms = 300000;  // 5 minutes
+    out->sleep_low_battery_pct = 10;           // 10%
+    out->sleep_global_inactivity_ms = 1800000; // 30 minutes
+    out->sleep_overfed_hold_ms = 120000;       // 2 minutes
+    out->mood_log_interval_minutes = 5; // log meters every 5 minutes by default (0=off)
+    out->affect_weight_happiness_pct = 100;
+    out->affect_weight_satiety_pct = 100;
+    out->affect_weight_energy_pct = 100;
+    out->affect_weight_social_pct = 100;
+    out->affect_weight_fear_pct = 100;
+    out->angry_dizzy_count_threshold = 3;
+    out->angry_dizzy_window_ms = 300000; // 5 minutes
+    out->angry_override_min_ms = 120000; // 2 minutes
+    out->angry_override_max_ms = 300000; // 5 minutes
+    out->dizzy_gyro_thresh_dps_x10 = 650; // 65.0 dps
+    out->dizzy_gyro_spike_dps_x10 = 1450; // 145.0 dps
+    out->dizzy_gdev_x100 = 30;            // 0.30 gdev
+    out->dizzy_accum_ms = 220;            // 220 ms
+    out->dizzy_cooldown_ms = 4500;        // 4.5 s
     out->mood_happiness = -1;
     out->mood_hunger = -1;
     out->mood_energy = -1;
@@ -92,6 +129,27 @@ static esp_err_t save_defaults_to_disk(const config_store_t *cfg)
     return config_store_save(cfg);
 }
 
+esp_err_t config_store_factory_reset(void)
+{
+    config_store_t defaults = {0};
+    config_store_get_defaults(&defaults);
+
+    // Clear fallback mirrors first so reboot starts from true defaults.
+    config_store_clear_eye_offsets_nvs();
+    config_store_clear_mood_nvs();
+
+    config_io_begin();
+    if (unlink(CONFIG_PATH) != 0 && errno != ENOENT) {
+        EL_LOGW(TAG, "Failed to remove %s (%s)", CONFIG_PATH, strerror(errno));
+    }
+    if (unlink(WIFI_CFG_PATH) != 0 && errno != ENOENT) {
+        EL_LOGW(TAG, "Failed to remove %s (%s)", WIFI_CFG_PATH, strerror(errno));
+    }
+    config_io_end();
+
+    return config_store_save(&defaults);
+}
+
 esp_err_t config_store_load(config_store_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
@@ -99,41 +157,52 @@ esp_err_t config_store_load(config_store_t *out)
     bool updated = false;
 
     if (!file_exists(CONFIG_PATH)) {
-        ESP_LOGW(TAG, "Config missing, writing defaults");
+        EL_LOGW(TAG, "Config missing, writing defaults");
         esp_err_t r = save_defaults_to_disk(out);
         if (r != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write defaults (%s), using defaults in RAM", esp_err_to_name(r));
+            EL_LOGW(TAG, "Failed to write defaults (%s), using defaults in RAM", esp_err_to_name(r));
         }
         return ESP_OK;
     }
 
+    config_io_begin();
     FILE *f = fopen(CONFIG_PATH, "r");
     if (!f) {
+        config_io_end();
         return ESP_FAIL;
     }
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (len <= 0 || len > 16 * 1024) {
+        config_io_begin();
         fclose(f);
+        config_io_end();
+        config_io_end();
         return save_defaults_to_disk(out);
     }
     char *buf = malloc((size_t)len + 1);
     if (!buf) {
+        config_io_begin();
         fclose(f);
+        config_io_end();
+        config_io_end();
         return ESP_ERR_NO_MEM;
     }
     fread(buf, 1, (size_t)len, f);
     buf[len] = '\0';
+    config_io_begin();
     fclose(f);
+    config_io_end();
+    config_io_end();
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
     if (!root) {
-        ESP_LOGW(TAG, "Config parse failed, using defaults");
+        EL_LOGW(TAG, "Config parse failed, using defaults");
         esp_err_t r = save_defaults_to_disk(out);
         if (r != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write defaults (%s), using defaults in RAM", esp_err_to_name(r));
+            EL_LOGW(TAG, "Failed to write defaults (%s), using defaults in RAM", esp_err_to_name(r));
         }
         return ESP_OK;
     }
@@ -213,10 +282,20 @@ esp_err_t config_store_load(config_store_t *out)
         if (!cJSON_HasObjectItem(eyes, "center_y_offset")) updated = true;
         if (!cJSON_HasObjectItem(eyes, "display_center_x_offset")) updated = true;
         if (!cJSON_HasObjectItem(eyes, "display_center_y_offset")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "glyph_offset_x")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "glyph_offset_y")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "glyph_scale")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "sleep_lid_depth")) updated = true;
+        if (!cJSON_HasObjectItem(eyes, "angry_lid_depth")) updated = true;
         json_apply_int(eyes, "center_x_offset", &out->eyes_center_x_offset);
         json_apply_int(eyes, "center_y_offset", &out->eyes_center_y_offset);
         json_apply_int(eyes, "display_center_x_offset", &out->display_center_x_offset);
         json_apply_int(eyes, "display_center_y_offset", &out->display_center_y_offset);
+        json_apply_int(eyes, "glyph_offset_x", &out->glyph_offset_x);
+        json_apply_int(eyes, "glyph_offset_y", &out->glyph_offset_y);
+        json_apply_int(eyes, "glyph_scale", &out->glyph_scale);
+        json_apply_int(eyes, "sleep_lid_depth", &out->sleep_lid_depth);
+        json_apply_int(eyes, "angry_lid_depth", &out->angry_lid_depth);
     } else {
         updated = true;
     }
@@ -224,15 +303,51 @@ esp_err_t config_store_load(config_store_t *out)
     if (cJSON_IsObject(sleep)) {
         if (!cJSON_HasObjectItem(sleep, "start_hour")) updated = true;
         if (!cJSON_HasObjectItem(sleep, "end_hour")) updated = true;
+        if (!cJSON_HasObjectItem(sleep, "window_inactivity_ms")) updated = true;
+        if (!cJSON_HasObjectItem(sleep, "low_battery_pct")) updated = true;
+        if (!cJSON_HasObjectItem(sleep, "global_inactivity_ms")) updated = true;
+        if (!cJSON_HasObjectItem(sleep, "overfed_hold_ms")) updated = true;
         json_apply_int(sleep, "start_hour", &out->sleep_start_hour);
         json_apply_int(sleep, "end_hour", &out->sleep_end_hour);
+        json_apply_int(sleep, "window_inactivity_ms", &out->sleep_window_inactivity_ms);
+        json_apply_int(sleep, "low_battery_pct", &out->sleep_low_battery_pct);
+        json_apply_int(sleep, "global_inactivity_ms", &out->sleep_global_inactivity_ms);
+        json_apply_int(sleep, "overfed_hold_ms", &out->sleep_overfed_hold_ms);
     } else {
         updated = true;
     }
     cJSON *emotion = cJSON_GetObjectItem(root, "emotion");
     if (cJSON_IsObject(emotion)) {
         if (!cJSON_HasObjectItem(emotion, "mood_log_interval_minutes")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_happiness_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_satiety_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_energy_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_social_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "affect_weight_fear_pct")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "angry_dizzy_count_threshold")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "angry_dizzy_window_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "angry_override_min_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "angry_override_max_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gyro_thresh_dps_x10")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gyro_spike_dps_x10")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_gdev_x100")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_accum_ms")) updated = true;
+        if (!cJSON_HasObjectItem(emotion, "dizzy_cooldown_ms")) updated = true;
         json_apply_int(emotion, "mood_log_interval_minutes", &out->mood_log_interval_minutes);
+        json_apply_int(emotion, "affect_weight_happiness_pct", &out->affect_weight_happiness_pct);
+        json_apply_int(emotion, "affect_weight_satiety_pct", &out->affect_weight_satiety_pct);
+        json_apply_int(emotion, "affect_weight_energy_pct", &out->affect_weight_energy_pct);
+        json_apply_int(emotion, "affect_weight_social_pct", &out->affect_weight_social_pct);
+        json_apply_int(emotion, "affect_weight_fear_pct", &out->affect_weight_fear_pct);
+        json_apply_int(emotion, "angry_dizzy_count_threshold", &out->angry_dizzy_count_threshold);
+        json_apply_int(emotion, "angry_dizzy_window_ms", &out->angry_dizzy_window_ms);
+        json_apply_int(emotion, "angry_override_min_ms", &out->angry_override_min_ms);
+        json_apply_int(emotion, "angry_override_max_ms", &out->angry_override_max_ms);
+        json_apply_int(emotion, "dizzy_gyro_thresh_dps_x10", &out->dizzy_gyro_thresh_dps_x10);
+        json_apply_int(emotion, "dizzy_gyro_spike_dps_x10", &out->dizzy_gyro_spike_dps_x10);
+        json_apply_int(emotion, "dizzy_gdev_x100", &out->dizzy_gdev_x100);
+        json_apply_int(emotion, "dizzy_accum_ms", &out->dizzy_accum_ms);
+        json_apply_int(emotion, "dizzy_cooldown_ms", &out->dizzy_cooldown_ms);
     } else {
         updated = true;
     }
@@ -282,13 +397,36 @@ esp_err_t config_store_save(const config_store_t *cfg)
     cJSON_AddNumberToObject(eyes, "center_y_offset", cfg->eyes_center_y_offset);
     cJSON_AddNumberToObject(eyes, "display_center_x_offset", cfg->display_center_x_offset);
     cJSON_AddNumberToObject(eyes, "display_center_y_offset", cfg->display_center_y_offset);
+    cJSON_AddNumberToObject(eyes, "glyph_offset_x", cfg->glyph_offset_x);
+    cJSON_AddNumberToObject(eyes, "glyph_offset_y", cfg->glyph_offset_y);
+    cJSON_AddNumberToObject(eyes, "glyph_scale", cfg->glyph_scale);
+    cJSON_AddNumberToObject(eyes, "sleep_lid_depth", cfg->sleep_lid_depth);
+    cJSON_AddNumberToObject(eyes, "angry_lid_depth", cfg->angry_lid_depth);
     cJSON *sleep = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "sleep", sleep);
     cJSON_AddNumberToObject(sleep, "start_hour", cfg->sleep_start_hour);
     cJSON_AddNumberToObject(sleep, "end_hour", cfg->sleep_end_hour);
+    cJSON_AddNumberToObject(sleep, "window_inactivity_ms", cfg->sleep_window_inactivity_ms);
+    cJSON_AddNumberToObject(sleep, "low_battery_pct", cfg->sleep_low_battery_pct);
+    cJSON_AddNumberToObject(sleep, "global_inactivity_ms", cfg->sleep_global_inactivity_ms);
+    cJSON_AddNumberToObject(sleep, "overfed_hold_ms", cfg->sleep_overfed_hold_ms);
     cJSON *emotion = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "emotion", emotion);
     cJSON_AddNumberToObject(emotion, "mood_log_interval_minutes", cfg->mood_log_interval_minutes);
+    cJSON_AddNumberToObject(emotion, "affect_weight_happiness_pct", cfg->affect_weight_happiness_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_satiety_pct", cfg->affect_weight_satiety_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_energy_pct", cfg->affect_weight_energy_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_social_pct", cfg->affect_weight_social_pct);
+    cJSON_AddNumberToObject(emotion, "affect_weight_fear_pct", cfg->affect_weight_fear_pct);
+    cJSON_AddNumberToObject(emotion, "angry_dizzy_count_threshold", cfg->angry_dizzy_count_threshold);
+    cJSON_AddNumberToObject(emotion, "angry_dizzy_window_ms", cfg->angry_dizzy_window_ms);
+    cJSON_AddNumberToObject(emotion, "angry_override_min_ms", cfg->angry_override_min_ms);
+    cJSON_AddNumberToObject(emotion, "angry_override_max_ms", cfg->angry_override_max_ms);
+    cJSON_AddNumberToObject(emotion, "dizzy_gyro_thresh_dps_x10", cfg->dizzy_gyro_thresh_dps_x10);
+    cJSON_AddNumberToObject(emotion, "dizzy_gyro_spike_dps_x10", cfg->dizzy_gyro_spike_dps_x10);
+    cJSON_AddNumberToObject(emotion, "dizzy_gdev_x100", cfg->dizzy_gdev_x100);
+    cJSON_AddNumberToObject(emotion, "dizzy_accum_ms", cfg->dizzy_accum_ms);
+    cJSON_AddNumberToObject(emotion, "dizzy_cooldown_ms", cfg->dizzy_cooldown_ms);
 
     cJSON *mood = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "mood_state", mood);
@@ -306,14 +444,22 @@ esp_err_t config_store_save(const config_store_t *cfg)
         return ESP_ERR_NO_MEM;
     }
 
+    config_io_begin();
     FILE *f = fopen(CONFIG_PATH, "w");
     if (!f) {
-        ESP_LOGE(TAG, "Failed to open %s for write (%s)", CONFIG_PATH, strerror(errno));
+        config_io_end();
+        EL_LOGE(TAG, "Failed to open %s for write (%s)", CONFIG_PATH, strerror(errno));
         free(printed);
         return ESP_FAIL;
     }
+    config_io_end();
+    config_io_begin();
     fwrite(printed, 1, strlen(printed), f);
+    config_io_end();
+    config_io_begin();
     fclose(f);
+    config_io_end();
     free(printed);
     return ESP_OK;
 }
+

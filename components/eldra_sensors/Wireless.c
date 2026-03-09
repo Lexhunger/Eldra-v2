@@ -1,4 +1,5 @@
 #include "Wireless.h"
+#include "eldra_logging.h"
 
 uint16_t BLE_NUM = 0;
 uint16_t WIFI_NUM = 0;
@@ -147,7 +148,7 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             }
             break;
         case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
-            ESP_LOGI(GATTC_TAG, "Scan complete. Total devices found: %d (with names: %d)", BLE_NUM, num_devices_with_name);
+            EL_LOGI(GATTC_TAG, "Scan complete. Total devices found: %d (with names: %d)", BLE_NUM, num_devices_with_name);
             break;
         default:
             break;

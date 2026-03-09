@@ -28,7 +28,31 @@ typedef enum {
     ELDRA_EYES_MOOD_ELDRITCH_RUNE,
 } eldra_eyes_mood_t;
 
+typedef enum {
+    ELDRA_EYES_MOD_NONE    = 0,
+    ELDRA_EYES_MOD_SLEEPY  = 1 << 0,
+    ELDRA_EYES_MOD_HUNGRY  = 1 << 1,
+    ELDRA_EYES_MOD_LONELY  = 1 << 2,
+    ELDRA_EYES_MOD_SCARED  = 1 << 3,
+    ELDRA_EYES_MOD_PLAYFUL = 1 << 4,
+} eldra_eyes_modifier_t;
+
 typedef struct eldra_eyes_context eldra_eyes_context_t;
+
+typedef struct {
+    bool blink_active;
+    bool look_active;
+    bool dizzy_active;
+    bool idle_clip_active;
+} eldra_eyes_activity_t;
+
+typedef struct {
+    float gyro_thresh_dps;
+    float gyro_spike_dps;
+    float gdev_thresh;
+    uint32_t accum_ms;
+    uint32_t cooldown_ms;
+} eldra_eyes_dizzy_config_t;
 
 /**
  * @brief Allocate and initialize a new Eldra eyes context.
@@ -71,6 +95,48 @@ void eldra_eyes_set_mood(eldra_eyes_context_t *ctx, eldra_eyes_mood_t mood);
  * @brief Get the current mood.
  */
 eldra_eyes_mood_t eldra_eyes_get_mood(const eldra_eyes_context_t *ctx);
+
+/**
+ * @brief Set concurrent eye mood modifiers (bitmask of @ref eldra_eyes_modifier_t).
+ */
+void eldra_eyes_set_modifiers(eldra_eyes_context_t *ctx, uint32_t modifier_mask);
+
+/**
+ * @brief Get current modifier bitmask.
+ */
+uint32_t eldra_eyes_get_modifiers(const eldra_eyes_context_t *ctx);
+
+/**
+ * @brief Control sleepy lid intensity profile.
+ *
+ * false = more-open tired look (default sleepy)
+ * true  = heavier droop (used near actual sleep transition)
+ */
+void eldra_eyes_set_sleep_lid_heavy(eldra_eyes_context_t *ctx, bool heavy);
+
+/**
+ * @brief Set base lid depths used by sleepy/angry overlays.
+ *
+ * Values are clamped to a safe visual range [0..6].
+ */
+void eldra_eyes_set_lid_depths(uint8_t sleep_depth, uint8_t angry_depth);
+
+/**
+ * @brief Get current base lid depths for sleepy/angry overlays.
+ */
+void eldra_eyes_get_lid_depths(uint8_t *sleep_depth, uint8_t *angry_depth);
+
+/**
+ * @brief Configure IMU thresholds used to trigger reactive dizzy.
+ *
+ * Values are clamped to safe ranges. This affects runtime behavior immediately.
+ */
+void eldra_eyes_set_dizzy_config(const eldra_eyes_dizzy_config_t *cfg);
+
+/**
+ * @brief Read current IMU dizzy trigger thresholds.
+ */
+void eldra_eyes_get_dizzy_config(eldra_eyes_dizzy_config_t *out_cfg);
 
 /**
  * @brief Trigger a CHIBI -> ELDRITCH transform animation.
@@ -138,6 +204,7 @@ void eldra_eyes_render(eldra_eyes_context_t *ctx,
  * without rebuilding.
  */
 void eldra_eyes_set_center_offset(int x_offset, int y_offset);
+void eldra_eyes_get_center_offset(int *x_offset, int *y_offset);
 
 /**
  * @brief Toggle a test pattern (border + crosshair) to validate centering/edges.
@@ -148,5 +215,28 @@ void eldra_eyes_set_test_pattern(bool enable);
  * @brief Set a global display center offset (applies to target/current centers).
  */
 void eldra_eyes_set_display_center_offset(int x_offset, int y_offset);
+void eldra_eyes_get_display_center_offset(int *x_offset, int *y_offset);
+
+/**
+ * @brief Get the currently effective center offset after runtime clamping.
+ *
+ * This reflects what render uses on the 480x480 panel after accounting for
+ * display center offset and eye sprite bounds.
+ */
+void eldra_eyes_get_effective_center_offset(int *x_offset, int *y_offset);
+
+/**
+ * @brief Get the effective eye-center offset used on the most recent render.
+ *
+ * This is the post-clamp eye offset (relative to display center) from the
+ * last call to @ref eldra_eyes_render, and is intended for layers that must
+ * stay visually locked to the eyes (e.g., glyph overlays).
+ */
+void eldra_eyes_get_last_render_center_offset(int *x_offset, int *y_offset);
+
+/**
+ * @brief Snapshot current animation activity flags.
+ */
+void eldra_eyes_get_activity(const eldra_eyes_context_t *ctx, eldra_eyes_activity_t *out);
 
 #endif /* ELDRA_EYES_H */

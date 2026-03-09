@@ -297,6 +297,194 @@ static bool cmd_loglevel(const char *args) {
     return true;
 }
 
+static bool cmd_logtag(const char *args) {
+    if (!args || !*args) {
+        log_event(LOG_LEVEL_INFO, TAG, "LOGTAG usage: LOGTAG <tag> ON|OFF [DEBUG|INFO|WARN|ERROR]");
+        return true;
+    }
+
+    char buf[LINE_BUF_MAX];
+    strlcpy(buf, args, sizeof(buf));
+    char *tag = strtok(buf, " ");
+    char *mode = strtok(NULL, " ");
+    char *lvl_s = strtok(NULL, " ");
+    if (!tag || !mode) {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGTAG missing args");
+        return true;
+    }
+
+    bool enable = false;
+    if (strcasecmp(mode, "ON") == 0) {
+        enable = true;
+    } else if (strcasecmp(mode, "OFF") == 0) {
+        enable = false;
+    } else {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGTAG mode must be ON/OFF");
+        return true;
+    }
+
+    log_level_t lvl = LOG_LEVEL_INFO;
+    if (lvl_s && *lvl_s) {
+        bool matched = false;
+        lvl = parse_level(lvl_s, &matched);
+        if (!matched) {
+            log_event(LOG_LEVEL_WARN, TAG, "LOGTAG level invalid");
+            return true;
+        }
+    }
+
+    if (!log_console_set_tag_rule(tag, enable, lvl)) {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGTAG failed (table full?) tag=%s", tag);
+        return true;
+    }
+
+    log_event(LOG_LEVEL_INFO, TAG, "LOGTAG tag=%s mode=%s level>=%d", tag, enable ? "ON" : "OFF", (int)lvl);
+    return true;
+}
+
+static bool cmd_logtagclr(const char *args) {
+    if (!args || !*args) {
+        log_console_clear_all_tag_rules();
+        log_event(LOG_LEVEL_INFO, TAG, "LOGTAGCLR all rules cleared");
+        return true;
+    }
+    log_console_clear_tag_rule(args);
+    log_event(LOG_LEVEL_INFO, TAG, "LOGTAGCLR tag=%s", args);
+    return true;
+}
+
+static bool cmd_logtags(const char *args)
+{
+    size_t limit = 64;
+    if (args && *args) {
+        uint32_t parsed = 0;
+        if (parse_uint(args, &parsed) && parsed > 0) {
+            limit = parsed;
+        }
+    }
+    if (limit > 64) {
+        limit = 64;
+    }
+
+    log_tag_info_t info[64];
+    size_t total = 0;
+    size_t shown = log_get_tag_snapshot(info, limit, &total);
+    log_event(LOG_LEVEL_INFO, TAG, "LOGTAGS total=%u showing=%u", (unsigned)total, (unsigned)shown);
+    for (size_t i = 0; i < shown; ++i) {
+        log_event(LOG_LEVEL_INFO, TAG, "  %-16s seen=%u last=%ums console=%s >=%d (%s)",
+                  info[i].tag,
+                  (unsigned)info[i].seen_count,
+                  (unsigned)info[i].last_seen_ms,
+                  info[i].console_enabled ? "ON" : "OFF",
+                  (int)info[i].console_min_level,
+                  info[i].has_console_rule ? "rule" : "default");
+    }
+    return true;
+}
+
+typedef struct {
+    const char *name;
+    const char *const *tags;
+    size_t tag_count;
+} log_focus_group_t;
+
+static const char *const k_focus_scaffold[] = {
+    "app_main", "cmd_router", "comms", "console", "jobs",
+    "console_sd", "console_wifi", "console_rtc", "console_imu", "console_emotion"
+};
+
+static const char *const k_focus_display[] = {
+    "eldra_display_round", "LCD", "eldra_eyes", "eldra_glyphs", "backlight", "exio"
+};
+
+static const char *const k_focus_sleep[] = {
+    "eldra_sleep", "emotion", "eldra_eyes"
+};
+
+static const char *const k_focus_cloud[] = {
+    "eldra_cloud", "cmd_router", "console_sd"
+};
+
+static const char *const k_focus_wifi[] = {
+    "wifi_drv", "console_wifi", "eldra_cloud", "app_main"
+};
+
+static const char *const k_focus_sensors[] = {
+    "eldra_sensors", "qmi8658", "ADC", "I2C", "console_imu"
+};
+
+static const char *const k_focus_storage[] = {
+    "sd_drv", "config_store", "eldra_logging", "rtc_drv", "console_sd"
+};
+
+static const log_focus_group_t k_log_focus_groups[] = {
+    {.name = "scaffold", .tags = k_focus_scaffold, .tag_count = sizeof(k_focus_scaffold) / sizeof(k_focus_scaffold[0])},
+    {.name = "display",  .tags = k_focus_display,  .tag_count = sizeof(k_focus_display) / sizeof(k_focus_display[0])},
+    {.name = "sleep",    .tags = k_focus_sleep,    .tag_count = sizeof(k_focus_sleep) / sizeof(k_focus_sleep[0])},
+    {.name = "cloud",    .tags = k_focus_cloud,    .tag_count = sizeof(k_focus_cloud) / sizeof(k_focus_cloud[0])},
+    {.name = "wifi",     .tags = k_focus_wifi,     .tag_count = sizeof(k_focus_wifi) / sizeof(k_focus_wifi[0])},
+    {.name = "sensors",  .tags = k_focus_sensors,  .tag_count = sizeof(k_focus_sensors) / sizeof(k_focus_sensors[0])},
+    {.name = "storage",  .tags = k_focus_storage,  .tag_count = sizeof(k_focus_storage) / sizeof(k_focus_storage[0])},
+};
+
+static bool cmd_logfocus(const char *args)
+{
+    if (!args || !*args) {
+        log_event(LOG_LEVEL_INFO, TAG,
+                  "LOGFOCUS usage: LOGFOCUS OFF|SCAFFOLD|DISPLAY|SLEEP|CLOUD|WIFI|SENSORS|STORAGE");
+        return true;
+    }
+
+    if (strcasecmp(args, "OFF") == 0 || strcasecmp(args, "ALL") == 0) {
+        log_console_clear_all_tag_rules();
+        log_set_console_level(LOG_LEVEL_INFO);
+        log_event(LOG_LEVEL_INFO, TAG, "LOGFOCUS disabled");
+        return true;
+    }
+
+    const log_focus_group_t *group = NULL;
+    for (size_t i = 0; i < sizeof(k_log_focus_groups) / sizeof(k_log_focus_groups[0]); ++i) {
+        if (strcasecmp(args, k_log_focus_groups[i].name) == 0) {
+            group = &k_log_focus_groups[i];
+            break;
+        }
+    }
+    if (!group) {
+        log_event(LOG_LEVEL_WARN, TAG, "LOGFOCUS unknown group=%s", args);
+        return true;
+    }
+
+    log_console_clear_all_tag_rules();
+    log_set_console_level(LOG_LEVEL_WARN);
+    bool ok = true;
+    ok &= log_console_set_tag_rule("console_sd", true, LOG_LEVEL_INFO);
+    ok &= log_console_set_tag_rule("cmd_router", true, LOG_LEVEL_INFO);
+    for (size_t i = 0; i < group->tag_count; ++i) {
+        ok &= log_console_set_tag_rule(group->tags[i], true, LOG_LEVEL_DEBUG);
+    }
+    log_event(LOG_LEVEL_INFO, TAG, "LOGFOCUS %s %s", group->name, ok ? "OK" : "PARTIAL");
+    return true;
+}
+
+static bool cmd_bridgestats(const char *args)
+{
+    (void)args;
+    comms_stats_t st = {0};
+    comms_get_stats(&st);
+    log_event(LOG_LEVEL_INFO, TAG,
+              "BRIDGESTATS depth=%u max=%u cap=16 enq=%u drop_full=%u drop_lock=%u deq=%u lat_ms(last=%u avg=%u max=%u)",
+              (unsigned)st.queue_depth,
+              (unsigned)st.queue_max_depth,
+              (unsigned)st.enqueue_ok,
+              (unsigned)st.enqueue_drop_full,
+              (unsigned)st.enqueue_drop_lock,
+              (unsigned)st.dequeue_ok,
+              (unsigned)st.dequeue_latency_last_ms,
+              (unsigned)st.dequeue_latency_avg_ms,
+              (unsigned)st.dequeue_latency_max_ms);
+    return true;
+}
+
 bool comms_commands_register(const char *name, console_cmd_handler_t handler, const char *help) {
     if (!name || !handler || s_command_count >= MAX_COMMANDS) {
         return false;
@@ -323,6 +511,11 @@ void comms_commands_init(emotion_context_t *ctx) {
     comms_commands_register("FORCESTATE", cmd_forcestate, "FORCESTATE <state_id>");
     comms_commands_register("LOGSD", cmd_logsd, "LOGSD ON|OFF|ROTATE");
     comms_commands_register("LOGLEVEL", cmd_loglevel, "LOGLEVEL DEBUG|INFO|WARN|ERROR");
+    comms_commands_register("LOGTAG", cmd_logtag, "LOGTAG <tag> ON|OFF [DEBUG|INFO|WARN|ERROR]");
+    comms_commands_register("LOGTAGCLR", cmd_logtagclr, "LOGTAGCLR [tag]");
+    comms_commands_register("LOGTAGS", cmd_logtags, "LOGTAGS [limit]");
+    comms_commands_register("LOGFOCUS", cmd_logfocus, "LOGFOCUS OFF|SCAFFOLD|DISPLAY|SLEEP|CLOUD|WIFI|SENSORS|STORAGE");
+    comms_commands_register("BRIDGESTATS", cmd_bridgestats, "BRIDGESTATS");
 }
 
 void comms_commands_process_line(const char *line) {

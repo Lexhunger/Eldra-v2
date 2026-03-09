@@ -8,10 +8,83 @@
 #include "esp_console.h"
 #include "eldra_comms.h"
 #include "eldra_eyes.h"
+#include "eldra_glyphs.h"
 #include "config_store.h"
 
 static const char *TAG = "console_emotion";
 static emotion_context_t *s_ctx = NULL;
+
+void eldra_request_render_now(void) __attribute__((weak));
+void eldra_set_sleep_eye_override(uint8_t mode) __attribute__((weak));
+uint8_t eldra_get_sleep_eye_override(void) __attribute__((weak));
+
+static int clamp_meter(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int clamp_weight_pct(int v)
+{
+    if (v < 0) return 0;
+    if (v > 300) return 300;
+    return v;
+}
+
+static bool parse_float_arg(const char *s, float *out)
+{
+    if (!s || !out) {
+        return false;
+    }
+    char *end = NULL;
+    float v = strtof(s, &end);
+    if (end == s || *end != '\0') {
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+static int round_to_int(float v, float scale)
+{
+    float scaled = v * scale;
+    return (int)(scaled + ((scaled >= 0.0f) ? 0.5f : -0.5f));
+}
+
+static void persist_dizzy_cfg(const eldra_eyes_dizzy_config_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    config_store_t persisted = {0};
+    if (config_store_load(&persisted) != ESP_OK) {
+        printf("Dizzy config applied (config load failed; not persisted)\n");
+        return;
+    }
+    persisted.dizzy_gyro_thresh_dps_x10 = round_to_int(cfg->gyro_thresh_dps, 10.0f);
+    persisted.dizzy_gyro_spike_dps_x10 = round_to_int(cfg->gyro_spike_dps, 10.0f);
+    persisted.dizzy_gdev_x100 = round_to_int(cfg->gdev_thresh, 100.0f);
+    persisted.dizzy_accum_ms = (int)cfg->accum_ms;
+    persisted.dizzy_cooldown_ms = (int)cfg->cooldown_ms;
+    if (config_store_save(&persisted) != ESP_OK) {
+        printf("Dizzy config applied (persist failed)\n");
+    } else {
+        printf("Dizzy config persisted\n");
+    }
+}
+
+static void print_affect_weights(void)
+{
+    emotion_affect_weights_t w = {0};
+    emotion_get_affect_weights(&w);
+    printf("Affect weights (pct): happy=%u satiety=%u energy=%u social=%u fear=%u\n",
+           (unsigned)w.happiness_pct,
+           (unsigned)w.satiety_pct,
+           (unsigned)w.energy_pct,
+           (unsigned)w.social_pct,
+           (unsigned)w.fear_pct);
+}
 
 static const char *state_name(emotion_state_t st)
 {
@@ -19,6 +92,7 @@ static const char *state_name(emotion_state_t st)
         case EMOTION_STATE_NEUTRAL: return "NEUTRAL";
         case EMOTION_STATE_HAPPY: return "HAPPY";
         case EMOTION_STATE_SAD: return "SAD";
+        case EMOTION_STATE_ANGRY: return "ANGRY";
         case EMOTION_STATE_LONELY: return "LONELY";
         case EMOTION_STATE_SLEEPY: return "SLEEPY";
         case EMOTION_STATE_HUNGRY: return "HUNGRY";
@@ -40,6 +114,7 @@ static emotion_state_t parse_state(const char *s, bool *ok)
     if (strcasecmp(s, "NEUTRAL") == 0) return EMOTION_STATE_NEUTRAL;
     if (strcasecmp(s, "HAPPY") == 0) return EMOTION_STATE_HAPPY;
     if (strcasecmp(s, "SAD") == 0) return EMOTION_STATE_SAD;
+    if (strcasecmp(s, "ANGRY") == 0) return EMOTION_STATE_ANGRY;
     if (strcasecmp(s, "LONELY") == 0) return EMOTION_STATE_LONELY;
     if (strcasecmp(s, "SLEEPY") == 0) return EMOTION_STATE_SLEEPY;
     if (strcasecmp(s, "HUNGRY") == 0) return EMOTION_STATE_HUNGRY;
@@ -51,7 +126,7 @@ static emotion_state_t parse_state(const char *s, bool *ok)
     // Accept numeric enums for convenience.
     char *end = NULL;
     long v = strtol(s, &end, 10);
-    if (end != s && v >= EMOTION_STATE_NEUTRAL && v <= EMOTION_STATE_DIZZY) {
+    if (end != s && v >= EMOTION_STATE_NEUTRAL && v <= EMOTION_STATE_ANGRY) {
         return (emotion_state_t)v;
     }
     if (ok) *ok = false;
@@ -161,6 +236,374 @@ static int cmd_state_show(int argc, char **argv)
     return 0;
 }
 
+static int cmd_log_interval(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: emo_log_interval <minutes> (0=off)\n");
+        return 0;
+    }
+    int minutes = atoi(argv[1]);
+    if (minutes < 0) minutes = 0;
+    emotion_set_mood_log_interval_minutes((uint32_t)minutes);
+    config_store_t cfg;
+    if (config_store_load(&cfg) == ESP_OK) {
+        cfg.mood_log_interval_minutes = minutes;
+        (void)config_store_save(&cfg);
+    }
+    printf("Mood log interval set to %d minute(s)%s\n", minutes, minutes == 0 ? " (disabled)" : "");
+    return 0;
+}
+
+static int cmd_emo_set(int argc, char **argv)
+{
+    if (!s_ctx) {
+        printf("Emotion context not available\n");
+        return 0;
+    }
+    if (argc < 3) {
+        printf("Usage: emo_set <happy|satiety|energy|social|fear|eldritch|battery> <value>\n");
+        printf("   or: emo_set all <happy> <satiety> <energy> <social> <fear> <eldritch> [battery]\n");
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "all") == 0) {
+        if (argc < 8) {
+            printf("Usage: emo_set all <happy> <satiety> <energy> <social> <fear> <eldritch> [battery]\n");
+            return 0;
+        }
+        s_ctx->happiness = (uint8_t)clamp_meter((int)strtol(argv[2], NULL, 10), 0, 100);
+        s_ctx->hunger = (uint8_t)clamp_meter((int)strtol(argv[3], NULL, 10), 0, 130);
+        s_ctx->energy = (uint8_t)clamp_meter((int)strtol(argv[4], NULL, 10), 0, 100);
+        s_ctx->social = (uint8_t)clamp_meter((int)strtol(argv[5], NULL, 10), 0, 100);
+        s_ctx->fear = (uint8_t)clamp_meter((int)strtol(argv[6], NULL, 10), 0, 100);
+        s_ctx->eldritch_charge = (uint8_t)clamp_meter((int)strtol(argv[7], NULL, 10), 0, 100);
+        if (argc >= 9) {
+            emotion_set_battery_percent(s_ctx, (uint8_t)clamp_meter((int)strtol(argv[8], NULL, 10), 0, 100));
+        }
+    } else {
+        int value = (int)strtol(argv[2], NULL, 10);
+        if (strcasecmp(argv[1], "happy") == 0 || strcasecmp(argv[1], "happiness") == 0) {
+            s_ctx->happiness = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "sat") == 0 || strcasecmp(argv[1], "satiety") == 0 ||
+                   strcasecmp(argv[1], "hunger") == 0) {
+            s_ctx->hunger = (uint8_t)clamp_meter(value, 0, 130);
+        } else if (strcasecmp(argv[1], "energy") == 0) {
+            s_ctx->energy = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "social") == 0) {
+            s_ctx->social = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "fear") == 0) {
+            s_ctx->fear = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "eld") == 0 || strcasecmp(argv[1], "eldritch") == 0) {
+            s_ctx->eldritch_charge = (uint8_t)clamp_meter(value, 0, 100);
+        } else if (strcasecmp(argv[1], "batt") == 0 || strcasecmp(argv[1], "battery") == 0) {
+            emotion_set_battery_percent(s_ctx, (uint8_t)clamp_meter(value, 0, 100));
+        } else {
+            printf("Unknown meter '%s'\n", argv[1]);
+            return 0;
+        }
+    }
+
+    if (eldra_request_render_now) {
+        eldra_request_render_now();
+    }
+
+    printf("Meters set: happy=%u satiety=%u energy=%u social=%u fear=%u eldritch=%u batt=%u%%\n",
+           s_ctx->happiness, s_ctx->hunger, s_ctx->energy, s_ctx->social,
+           s_ctx->fear, s_ctx->eldritch_charge, s_ctx->battery_percent);
+    return 0;
+}
+
+static int cmd_eyes_sleep_force(int argc, char **argv)
+{
+    if (!eldra_set_sleep_eye_override) {
+        printf("Sleep-eye override hook unavailable in this build\n");
+        return 0;
+    }
+
+    uint8_t current = 0;
+    if (eldra_get_sleep_eye_override) {
+        current = eldra_get_sleep_eye_override();
+    }
+
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        const char *name = (current == 0U) ? "off" : (current == 1U) ? "light" : "heavy";
+        printf("Sleep-eye override: %s (%u)\n", name, (unsigned)current);
+        printf("Usage: eyes_sleep_force <off|light|heavy|status>\n");
+        return 0;
+    }
+
+    uint8_t mode = current;
+    if (strcasecmp(argv[1], "off") == 0 || strcmp(argv[1], "0") == 0) {
+        mode = 0U;
+    } else if (strcasecmp(argv[1], "light") == 0 || strcasecmp(argv[1], "on") == 0 || strcmp(argv[1], "1") == 0) {
+        mode = 1U;
+    } else if (strcasecmp(argv[1], "heavy") == 0 || strcmp(argv[1], "2") == 0) {
+        mode = 2U;
+    } else {
+        printf("Usage: eyes_sleep_force <off|light|heavy|status>\n");
+        return 0;
+    }
+
+    eldra_set_sleep_eye_override(mode);
+    const char *name = (mode == 0U) ? "off" : (mode == 1U) ? "light" : "heavy";
+    printf("Sleep-eye override set: %s (%u)\n", name, (unsigned)mode);
+    return 0;
+}
+
+static void print_dizzy_cfg(void)
+{
+    eldra_eyes_dizzy_config_t cfg = {0};
+    eldra_eyes_get_dizzy_config(&cfg);
+    printf("Dizzy IMU config: gyro_thresh=%.1f dps spike=%.1f dps gdev=%.2f accum=%u ms cooldown=%u ms\n",
+           (double)cfg.gyro_thresh_dps,
+           (double)cfg.gyro_spike_dps,
+           (double)cfg.gdev_thresh,
+           (unsigned)cfg.accum_ms,
+           (unsigned)cfg.cooldown_ms);
+}
+
+static int cmd_eyes_dizzy(int argc, char **argv)
+{
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        print_dizzy_cfg();
+        printf("Usage: eyes_dizzy status\n");
+        printf("   or: eyes_dizzy preset <easy|normal|hard> [persist|temp]\n");
+        printf("   or: eyes_dizzy <gyro_thresh|spike|gdev|accum_ms|cooldown_ms> <value> [persist|temp]\n");
+        printf("   or: eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]\n");
+        return 0;
+    }
+
+    eldra_eyes_dizzy_config_t cfg = {0};
+    eldra_eyes_get_dizzy_config(&cfg);
+
+    if (strcasecmp(argv[1], "preset") == 0) {
+        if (argc < 3) {
+            printf("Usage: eyes_dizzy preset <easy|normal|hard> [persist|temp]\n");
+            return 0;
+        }
+        bool persist = true;
+        if (argc >= 4) {
+            if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+                persist = false;
+            } else if (strcasecmp(argv[3], "persist") == 0) {
+                persist = true;
+            } else {
+                printf("Invalid mode '%s'. Use persist|temp\n", argv[3]);
+                return 0;
+            }
+        }
+        if (strcasecmp(argv[2], "easy") == 0) {
+            cfg.gyro_thresh_dps = 55.0f;
+            cfg.gyro_spike_dps = 120.0f;
+            cfg.gdev_thresh = 0.26f;
+            cfg.accum_ms = 150U;
+            cfg.cooldown_ms = 3500U;
+        } else if (strcasecmp(argv[2], "normal") == 0) {
+            cfg.gyro_thresh_dps = 65.0f;
+            cfg.gyro_spike_dps = 145.0f;
+            cfg.gdev_thresh = 0.30f;
+            cfg.accum_ms = 220U;
+            cfg.cooldown_ms = 4500U;
+        } else if (strcasecmp(argv[2], "hard") == 0) {
+            cfg.gyro_thresh_dps = 80.0f;
+            cfg.gyro_spike_dps = 180.0f;
+            cfg.gdev_thresh = 0.38f;
+            cfg.accum_ms = 300U;
+            cfg.cooldown_ms = 6000U;
+        } else {
+            printf("Unknown preset '%s'. Use easy|normal|hard\n", argv[2]);
+            return 0;
+        }
+        eldra_eyes_set_dizzy_config(&cfg);
+        if (persist) {
+            persist_dizzy_cfg(&cfg);
+        }
+        print_dizzy_cfg();
+        return 0;
+    }
+
+    if (argc >= 3 &&
+        strcasecmp(argv[1], "set") != 0 &&
+        strcasecmp(argv[1], "preset") != 0) {
+        bool persist = true;
+        if (argc >= 4) {
+            if (strcasecmp(argv[3], "temp") == 0 || strcasecmp(argv[3], "volatile") == 0) {
+                persist = false;
+            } else if (strcasecmp(argv[3], "persist") == 0) {
+                persist = true;
+            } else {
+                printf("Invalid mode '%s'. Use persist|temp\n", argv[3]);
+                return 0;
+            }
+        }
+
+        const char *field = argv[1];
+        if (strcasecmp(field, "gyro_thresh") == 0 || strcasecmp(field, "gyro") == 0 ||
+            strcasecmp(field, "thresh") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for gyro_thresh\n", argv[2]);
+                return 0;
+            }
+            cfg.gyro_thresh_dps = v;
+        } else if (strcasecmp(field, "spike") == 0 || strcasecmp(field, "gyro_spike") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for spike\n", argv[2]);
+                return 0;
+            }
+            cfg.gyro_spike_dps = v;
+        } else if (strcasecmp(field, "gdev") == 0 || strcasecmp(field, "g") == 0) {
+            float v = 0.0f;
+            if (!parse_float_arg(argv[2], &v)) {
+                printf("Invalid value '%s' for gdev\n", argv[2]);
+                return 0;
+            }
+            cfg.gdev_thresh = v;
+        } else if (strcasecmp(field, "accum_ms") == 0 || strcasecmp(field, "accum") == 0) {
+            int v = (int)strtol(argv[2], NULL, 10);
+            if (v <= 0) {
+                printf("Invalid value '%s' for accum_ms\n", argv[2]);
+                return 0;
+            }
+            cfg.accum_ms = (uint32_t)v;
+        } else if (strcasecmp(field, "cooldown_ms") == 0 || strcasecmp(field, "cooldown") == 0) {
+            int v = (int)strtol(argv[2], NULL, 10);
+            if (v <= 0) {
+                printf("Invalid value '%s' for cooldown_ms\n", argv[2]);
+                return 0;
+            }
+            cfg.cooldown_ms = (uint32_t)v;
+        } else {
+            printf("Unknown field '%s'. Use gyro_thresh|spike|gdev|accum_ms|cooldown_ms\n", field);
+            return 0;
+        }
+
+        eldra_eyes_set_dizzy_config(&cfg);
+        if (persist) {
+            persist_dizzy_cfg(&cfg);
+        }
+        print_dizzy_cfg();
+        return 0;
+    }
+
+    int value_index = 1;
+    if (strcasecmp(argv[1], "set") == 0) {
+        value_index = 2;
+    }
+    if ((argc - value_index) < 5) {
+        printf("Usage: eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]\n");
+        return 0;
+    }
+
+    float gyro_thresh = 0.0f;
+    float spike = 0.0f;
+    float gdev = 0.0f;
+    if (!parse_float_arg(argv[value_index + 0], &gyro_thresh) ||
+        !parse_float_arg(argv[value_index + 1], &spike) ||
+        !parse_float_arg(argv[value_index + 2], &gdev)) {
+        printf("Invalid numeric argument. Example: eyes_dizzy set 70 160 0.35 250 5000\n");
+        return 0;
+    }
+
+    int accum_ms = (int)strtol(argv[value_index + 3], NULL, 10);
+    int cooldown_ms = (int)strtol(argv[value_index + 4], NULL, 10);
+    if (accum_ms <= 0 || cooldown_ms <= 0) {
+        printf("accum_ms and cooldown_ms must be > 0\n");
+        return 0;
+    }
+    bool persist = true;
+    if ((argc - value_index) >= 6) {
+        const char *mode = argv[value_index + 5];
+        if (strcasecmp(mode, "temp") == 0 || strcasecmp(mode, "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(mode, "persist") == 0) {
+            persist = true;
+        } else {
+            printf("Invalid mode '%s'. Use persist|temp\n", mode);
+            return 0;
+        }
+    }
+
+    cfg.gyro_thresh_dps = gyro_thresh;
+    cfg.gyro_spike_dps = spike;
+    cfg.gdev_thresh = gdev;
+    cfg.accum_ms = (uint32_t)accum_ms;
+    cfg.cooldown_ms = (uint32_t)cooldown_ms;
+    eldra_eyes_set_dizzy_config(&cfg);
+    if (persist) {
+        persist_dizzy_cfg(&cfg);
+    }
+    print_dizzy_cfg();
+    return 0;
+}
+
+static int cmd_emo_weight(int argc, char **argv)
+{
+    emotion_affect_weights_t w = {0};
+    emotion_get_affect_weights(&w);
+
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        print_affect_weights();
+        printf("Usage: emo_weight <happy|satiety|energy|social|fear> <pct 0..300>\n");
+        printf("   or: emo_weight all <happy> <satiety> <energy> <social> <fear>\n");
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "all") == 0) {
+        if (argc < 7) {
+            printf("Usage: emo_weight all <happy> <satiety> <energy> <social> <fear>\n");
+            return 0;
+        }
+        w.happiness_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[2], NULL, 10));
+        w.satiety_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[3], NULL, 10));
+        w.energy_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[4], NULL, 10));
+        w.social_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[5], NULL, 10));
+        w.fear_pct = (uint16_t)clamp_weight_pct((int)strtol(argv[6], NULL, 10));
+    } else {
+        if (argc < 3) {
+            printf("Usage: emo_weight <happy|satiety|energy|social|fear> <pct 0..300>\n");
+            return 0;
+        }
+        uint16_t value = (uint16_t)clamp_weight_pct((int)strtol(argv[2], NULL, 10));
+        if (strcasecmp(argv[1], "happy") == 0 || strcasecmp(argv[1], "happiness") == 0) {
+            w.happiness_pct = value;
+        } else if (strcasecmp(argv[1], "sat") == 0 || strcasecmp(argv[1], "satiety") == 0 ||
+                   strcasecmp(argv[1], "hunger") == 0) {
+            w.satiety_pct = value;
+        } else if (strcasecmp(argv[1], "energy") == 0) {
+            w.energy_pct = value;
+        } else if (strcasecmp(argv[1], "social") == 0) {
+            w.social_pct = value;
+        } else if (strcasecmp(argv[1], "fear") == 0) {
+            w.fear_pct = value;
+        } else {
+            printf("Unknown target '%s'\n", argv[1]);
+            return 0;
+        }
+    }
+
+    emotion_set_affect_weights(&w);
+    config_store_t cfg = {0};
+    if (config_store_load(&cfg) == ESP_OK) {
+        cfg.affect_weight_happiness_pct = (int)w.happiness_pct;
+        cfg.affect_weight_satiety_pct = (int)w.satiety_pct;
+        cfg.affect_weight_energy_pct = (int)w.energy_pct;
+        cfg.affect_weight_social_pct = (int)w.social_pct;
+        cfg.affect_weight_fear_pct = (int)w.fear_pct;
+        if (config_store_save(&cfg) != ESP_OK) {
+            printf("Affect weights applied (persist failed)\n");
+        }
+    } else {
+        printf("Affect weights applied (config load failed; not persisted)\n");
+    }
+    if (eldra_request_render_now) {
+        eldra_request_render_now();
+    }
+    print_affect_weights();
+    return 0;
+}
+
 static int cmd_eyes_offset(int argc, char **argv)
 {
     if (argc < 3) {
@@ -178,13 +621,16 @@ static int cmd_eyes_offset(int argc, char **argv)
         }
     }
     eldra_eyes_set_center_offset(x, y);
+    int eff_x = x, eff_y = y;
+    eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     if (persist) {
         config_store_t cfg;
         if (config_store_load(&cfg) == ESP_OK) {
-            cfg.eyes_center_x_offset = x;
-            cfg.eyes_center_y_offset = y;
+            cfg.eyes_center_x_offset = eff_x;
+            cfg.eyes_center_y_offset = eff_y;
             if (config_store_save(&cfg) == ESP_OK) {
-                printf("Eyes center offset persisted to config (x=%d y=%d)\n", x, y);
+                printf("Eyes center offset persisted to config (requested x=%d y=%d, saved/effective x=%d y=%d)\n",
+                       x, y, eff_x, eff_y);
             } else {
                 printf("Persist failed (save error)\n");
             }
@@ -192,7 +638,8 @@ static int cmd_eyes_offset(int argc, char **argv)
             printf("Persist failed (config load error)\n");
         }
     } else {
-        printf("Eyes center offset set to x=%d y=%d (not persisted)\n", x, y);
+        printf("Eyes center offset set (requested x=%d y=%d, effective x=%d y=%d; not persisted)\n",
+               x, y, eff_x, eff_y);
     }
     return 0;
 }
@@ -217,6 +664,76 @@ static int cmd_eyes_test(int argc, char **argv)
     return 0;
 }
 
+static int cmd_eyes_lid(int argc, char **argv)
+{
+    uint8_t sleep_depth = 0;
+    uint8_t angry_depth = 0;
+    eldra_eyes_get_lid_depths(&sleep_depth, &angry_depth);
+
+    if (argc == 1) {
+        printf("Lid depths: sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+        printf("Usage: eyes_lid <sleep_depth 0..6> [angry_depth 0..6] [persist|temp]\n");
+        return 0;
+    }
+
+    char *end = NULL;
+    int sleep_req = (int)strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0') {
+        printf("Invalid sleep depth '%s'. Allowed range is 0..6\n", argv[1]);
+        return 0;
+    }
+
+    int angry_req = (int)angry_depth;
+    int mode_arg_index = -1;
+    if (argc >= 3) {
+        end = NULL;
+        int parsed = (int)strtol(argv[2], &end, 10);
+        if (end != argv[2] && *end == '\0') {
+            angry_req = parsed;
+            mode_arg_index = (argc >= 4) ? 3 : -1;
+        } else {
+            mode_arg_index = 2;
+        }
+    }
+
+    bool persist = true;
+    if (mode_arg_index > 0) {
+        if (strcasecmp(argv[mode_arg_index], "temp") == 0 || strcasecmp(argv[mode_arg_index], "volatile") == 0) {
+            persist = false;
+        } else if (strcasecmp(argv[mode_arg_index], "persist") == 0) {
+            persist = true;
+        } else {
+            printf("Invalid mode '%s'. Use persist|temp\n", argv[mode_arg_index]);
+            return 0;
+        }
+    }
+
+    if (sleep_req < 0 || sleep_req > 6 || angry_req < 0 || angry_req > 6) {
+        printf("Invalid depth. Allowed range is 0..6\n");
+        return 0;
+    }
+
+    eldra_eyes_set_lid_depths((uint8_t)sleep_req, (uint8_t)angry_req);
+    eldra_eyes_get_lid_depths(&sleep_depth, &angry_depth);
+    if (persist) {
+        config_store_t cfg = {0};
+        if (config_store_load(&cfg) == ESP_OK) {
+            cfg.sleep_lid_depth = (int)sleep_depth;
+            cfg.angry_lid_depth = (int)angry_depth;
+            if (config_store_save(&cfg) == ESP_OK) {
+                printf("Lid depths set and persisted: sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+            } else {
+                printf("Lid depths set (persist failed): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+            }
+        } else {
+            printf("Lid depths set (config load failed): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+        }
+    } else {
+        printf("Lid depths set (not persisted): sleep=%u angry=%u\n", (unsigned)sleep_depth, (unsigned)angry_depth);
+    }
+    return 0;
+}
+
 static int cmd_disp_center(int argc, char **argv)
 {
     if (argc < 3) {
@@ -234,13 +751,19 @@ static int cmd_disp_center(int argc, char **argv)
         }
     }
     eldra_eyes_set_display_center_offset(x, y);
+    eldra_glyphs_set_display_center_offset(x, y);
+    int raw_x = 0, raw_y = 0;
+    int eff_x = 0, eff_y = 0;
+    eldra_eyes_get_display_center_offset(&raw_x, &raw_y);
+    eldra_eyes_get_effective_center_offset(&eff_x, &eff_y);
     if (persist) {
         config_store_t cfg;
         if (config_store_load(&cfg) == ESP_OK) {
             cfg.display_center_x_offset = x;
             cfg.display_center_y_offset = y;
             if (config_store_save(&cfg) == ESP_OK) {
-                printf("Display center offset persisted (x=%d y=%d)\n", x, y);
+                printf("Display center persisted (requested x=%d y=%d, applied x=%d y=%d, effective eyes x=%d y=%d)\n",
+                       x, y, raw_x, raw_y, eff_x, eff_y);
             } else {
                 printf("Persist failed (save error)\n");
             }
@@ -248,7 +771,8 @@ static int cmd_disp_center(int argc, char **argv)
             printf("Persist failed (config load error)\n");
         }
     } else {
-        printf("Display center offset set to x=%d y=%d (not persisted)\n", x, y);
+        printf("Display center set (requested x=%d y=%d, applied x=%d y=%d, effective eyes x=%d y=%d; not persisted)\n",
+               x, y, raw_x, raw_y, eff_x, eff_y);
     }
     return 0;
 }
@@ -305,6 +829,30 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&show_cmd), TAG, "register emo_state_show failed");
 
+    const esp_console_cmd_t logint_cmd = {
+        .command = "emo_log_interval",
+        .help = "Set mood log interval in minutes (0 disables logging). Usage: emo_log_interval <minutes>",
+        .hint = NULL,
+        .func = &cmd_log_interval,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&logint_cmd), TAG, "register emo_log_interval failed");
+
+    const esp_console_cmd_t meter_set_cmd = {
+        .command = "emo_set",
+        .help = "Set emotion meters for testing. Usage: emo_set <meter> <value> | emo_set all <h sat e s f eld> [batt]",
+        .hint = NULL,
+        .func = &cmd_emo_set,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&meter_set_cmd), TAG, "register emo_set failed");
+
+    const esp_console_cmd_t weight_set_cmd = {
+        .command = "emo_weight",
+        .help = "Set affect weights (pct; 100=default). Usage: emo_weight <target> <pct> | emo_weight all <h sat e s f> | emo_weight status",
+        .hint = NULL,
+        .func = &cmd_emo_weight,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&weight_set_cmd), TAG, "register emo_weight failed");
+
     const esp_console_cmd_t offset_cmd = {
         .command = "eyes_offset",
         .help = "Set eye center offset in pixels (persists by default). Usage: eyes_offset <x> <y> [persist|temp] (positive=right/down)",
@@ -320,6 +868,30 @@ esp_err_t ConsoleEmotion_Init(emotion_context_t *ctx)
         .func = &cmd_eyes_test,
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&test_cmd), TAG, "register eyes_test failed");
+
+    const esp_console_cmd_t lid_cmd = {
+        .command = "eyes_lid",
+        .help = "Set/persist lid depth. Usage: eyes_lid <sleep_depth 0..6> [angry_depth 0..6] [persist|temp]",
+        .hint = NULL,
+        .func = &cmd_eyes_lid,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&lid_cmd), TAG, "register eyes_lid failed");
+
+    const esp_console_cmd_t sleep_force_cmd = {
+        .command = "eyes_sleep_force",
+        .help = "Force sleepy-eye overlay without entering sleep. Usage: eyes_sleep_force <off|light|heavy|status>",
+        .hint = NULL,
+        .func = &cmd_eyes_sleep_force,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&sleep_force_cmd), TAG, "register eyes_sleep_force failed");
+
+    const esp_console_cmd_t eyes_dizzy_cmd = {
+        .command = "eyes_dizzy",
+        .help = "Tune IMU dizzy sensitivity. Usage: eyes_dizzy status | eyes_dizzy preset <easy|normal|hard> [persist|temp] | eyes_dizzy <field> <value> [persist|temp] | eyes_dizzy set <gyro_thresh> <spike> <gdev> <accum_ms> <cooldown_ms> [persist|temp]",
+        .hint = NULL,
+        .func = &cmd_eyes_dizzy,
+    };
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&eyes_dizzy_cmd), TAG, "register eyes_dizzy failed");
 
     const esp_console_cmd_t disp_center_cmd = {
         .command = "disp_center",

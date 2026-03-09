@@ -33,3 +33,6 @@ esp_err_t wifi_driver_ping(const char *host, uint32_t count, uint32_t timeout_ms
 
 // Retrieve last saved credentials (from last connect attempt). Returns true if present.
 bool wifi_driver_get_saved_credentials(char *ssid_out, size_t ssid_len, char *pass_out, size_t pass_len);
+
+// True once esp_wifi has been initialized and started by this driver.
+bool wifi_driver_is_initialized(void);

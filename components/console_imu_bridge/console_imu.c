@@ -1,4 +1,5 @@
 #include "console_imu.h"
+#include "eldra_logging.h"
 
 #include "esp_console.h"
 #include "esp_check.h"
@@ -53,6 +54,7 @@ esp_err_t ConsoleIMU_Init(void)
     };
     ESP_RETURN_ON_ERROR(esp_console_cmd_register(&read_cmd), TAG, "register imu_read failed");
 
-    ESP_LOGI(TAG, "IMU console commands ready");
+    EL_LOGI(TAG, "IMU console commands ready");
     return ESP_OK;
 }
+

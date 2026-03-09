@@ -1,6 +1,7 @@
 #include "I2C_Driver.h"
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
+#include "eldra_logging.h"
 
 
 static const char *I2C_TAG = "I2C";
@@ -25,7 +26,7 @@ void I2C_Init(void)
 {
     /********************* I2C *********************/
     ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(I2C_TAG, "I2C initialized successfully");  
+    EL_LOGI(I2C_TAG, "I2C initialized successfully");  
 }
 
 
@@ -73,3 +74,4 @@ esp_err_t I2C_Read(uint8_t Driver_addr, uint8_t Reg_addr, uint8_t *Reg_data, uin
     i2c_master_bus_rm_device(dev);
     return ret;
 }
+

@@ -1,4 +1,5 @@
 #include "qmi8658.h"
+#include "eldra_logging.h"
 
 #include <stdbool.h>
 #include "esp_check.h"
@@ -106,7 +107,7 @@ static esp_err_t probe_address(uint8_t addr)
     uint8_t who = 0;
     esp_err_t ret = i2c_read_reg(QMI8658_WHO_AM_I, &who, 1);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Found QMI8658 at 0x%02X (WHO_AM_I=0x%02X)", addr, who);
+        EL_LOGI(TAG, "Found QMI8658 at 0x%02X (WHO_AM_I=0x%02X)", addr, who);
     }
     return ret;
 }
@@ -149,7 +150,7 @@ esp_err_t qmi8658_init(void)
     ESP_RETURN_ON_ERROR(i2c_write_u8(QMI8658_CTRL7, 0x43), TAG, "write CTRL7 failed");
 
     s_inited = true;
-    ESP_LOGI(TAG, "QMI8658 ready (addr 0x%02X)", s_addr);
+    EL_LOGI(TAG, "QMI8658 ready (addr 0x%02X)", s_addr);
     vTaskDelay(pdMS_TO_TICKS(10));
     return ESP_OK;
 }
@@ -184,3 +185,4 @@ esp_err_t qmi8658_read_sample(qmi8658_sample_t *out)
     out->gz = gz * s_gyro_scale;
     return ESP_OK;
 }
+

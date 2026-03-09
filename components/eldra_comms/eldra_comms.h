@@ -20,6 +20,7 @@ typedef enum {
     CMD_FEED = 0,
     CMD_PET,
     CMD_PLAY,
+    CMD_SHAKE,
     CMD_DEBUG_FORCE_STATE,
     CMD_SET_FLAG,
     CMD_RESERVED_RFID,
@@ -34,6 +35,21 @@ typedef struct {
     uint32_t arg0;
     uint32_t arg1;
 } pet_command_t;
+
+/**
+ * @brief Runtime counters for the comms bridge queue.
+ */
+typedef struct {
+    uint32_t queue_depth;
+    uint32_t queue_max_depth;
+    uint32_t enqueue_ok;
+    uint32_t enqueue_drop_full;
+    uint32_t enqueue_drop_lock;
+    uint32_t dequeue_ok;
+    uint32_t dequeue_latency_last_ms;
+    uint32_t dequeue_latency_avg_ms;
+    uint32_t dequeue_latency_max_ms;
+} comms_stats_t;
 
 /**
  * @brief Initialize the comms queue and reset producer stubs.
@@ -60,6 +76,11 @@ bool comms_dequeue_command(pet_command_t *out_cmd);
  * @param now_ms Current monotonic time in milliseconds.
  */
 void comms_process_all_pending(emotion_context_t *emotion, uint32_t now_ms);
+
+/**
+ * @brief Read comms bridge queue stats.
+ */
+void comms_get_stats(comms_stats_t *out_stats);
 
 /**
  * @brief Stub: BLE packet handler should parse data and enqueue commands.

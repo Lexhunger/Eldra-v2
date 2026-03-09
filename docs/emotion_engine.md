@@ -10,7 +10,7 @@ Eldra's Emotion Engine keeps a set of bounded meters, resolves them into a named
 - **fear (0-100):** Spikes on edge detection/shake; decays passively.
 - **eldritch_charge (0-100):** Slow charge + shake boosts; gated by satiety/energy/battery before entering ELDRITCH.
 - **battery_percent (0-100):** Passed in from sensors; used to gate sleepy/eldritch.
-- Config knobs: `sleep.start_hour`/`sleep.end_hour` (default 22–8), `emotion.mood_log_interval_minutes` (default 20, 0=off).
+- Config knobs: `sleep.start_hour`/`sleep.end_hour` (default 22–8), `emotion.mood_log_interval_minutes` (default 5, 0=off).
 
 ## Named States
 - **NEUTRAL**
@@ -40,7 +40,7 @@ Eldra's Emotion Engine keeps a set of bounded meters, resolves them into a named
 ## Needs Mask and Affect
 - **Needs mask:** `emotion_get_needs()` returns bitflags (hungry, lonely, sleepy, scared, playful, eldritch-ready) for blending expressions without changing the hard state.
 - **Affect:** `emotion_get_affect(&valence,&arousal)` derives neutral/happy/sad/angry/excited plus signed valence/arousal for finer visual blending.
-- **Periodic logging:** meters + affect + needs are logged every `mood_log_interval_minutes` if enabled.
+- **Periodic logging:** meters + affect + needs are logged every `mood_log_interval_minutes` if enabled (default 5 min).
 
 ## Event API (hardware-agnostic)
 These entry points are called by other modules; they adjust meters, track timestamps, clear forced-sleep, and re-select state.
@@ -62,6 +62,23 @@ The Emotion Engine only signals intent; display, haptics, and audio live in othe
 - Optional per-domain hooks such as `emotion_output_set_animation(...)` or `emotion_output_set_haptics(...)`
 
 The default stub implementation simply logs state changes; the real render/haptics/audio layers will override these hooks later.
+
+## Dizzy IMU Tuning
+- `eyes_dizzy status` - print current IMU dizzy thresholds.
+- `eyes_dizzy preset <easy|normal|hard> [persist|temp]` - apply a preset.
+- `eyes_dizzy <gyro_thresh|spike|gdev|accum_ms|cooldown_ms> <value> [persist|temp]` - tune one field.
+- `eyes_dizzy set <gyro_thresh_dps> <spike_dps> <gdev_thresh> <accum_ms> <cooldown_ms> [persist|temp]` - set all values.
+
+Field definitions:
+- `gyro_thresh` - sustained gyro threshold in deg/sec.
+- `spike` - instant spike threshold in deg/sec.
+- `gdev` - accel magnitude deviation from 1g (unitless).
+- `accum_ms` - required time above threshold.
+- `cooldown_ms` - post-trigger refractory time.
+
+Persistence:
+- `persist` (default) writes to `/sdcard/config.json`.
+- `temp` changes runtime behavior only.
 
 ## Data Flow
 ```

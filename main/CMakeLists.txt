@@ -10,11 +10,14 @@ idf_component_register(
         eldra_logging
         eldra_sd
         eldra_cloud
+        eldra_sleep
         wifi_driver
         sd_driver
         config_store
         rtc_driver
         imu_qmi8658
+        exio
+        runtime_monitor
         console_jobs
         console_wifi_bridge
         console_sd_bridge

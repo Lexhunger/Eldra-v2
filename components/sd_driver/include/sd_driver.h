@@ -29,14 +29,14 @@ esp_err_t sd_driver_delete_async(const char *path);
 
 /**
  * @brief Queue a log line to the daily rotating log.
- *        Logs are stored in /sdcard/logs/YYYYMMDD.log, only the latest 5 days kept.
+ *        Logs are stored in /sdcard/LOGS/YYYYMMDD.log, only the latest 5 days kept.
  * @param line Text to append.
  */
 esp_err_t sd_driver_log_async(const char *line);
 
 /**
  * @brief Save Wi-Fi credentials to SD so they can be reused across boots.
- *        File is stored at /sdcard/wifi/last_wifi.txt
+ *        File is stored at /sdcard/WIFI/WIFI.CFG
  */
 esp_err_t sd_driver_save_wifi_credentials(const char *ssid, const char *password);
 

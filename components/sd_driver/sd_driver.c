@@ -1,7 +1,9 @@
 #include "sd_driver.h"
+#include "eldra_logging.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <dirent.h>
@@ -56,6 +58,17 @@ static QueueHandle_t sd_queue = NULL;
 static TaskHandle_t sd_task_handle = NULL;
 static bool sd_mounted = false;
 static sdmmc_card_t *sd_card = NULL;
+static const size_t k_sd_mount_len = sizeof(SD_MOUNT_POINT) - 1;
+
+static inline void sd_io_guard_begin(void)
+{
+    EXIO_ForceLCDIdle();
+}
+
+static inline void sd_io_guard_end(void)
+{
+    EXIO_ForceLCDIdle();
+}
 
 static esp_err_t sd_mount(void);
 static void sd_worker(void *arg);
@@ -73,6 +86,106 @@ static void ensure_dirs(const char *path)
         }
     }
     mkdir(tmp, 0775);
+}
+
+static void normalize_sd_path(const char *input, char *out, size_t len)
+{
+    if (!out || len == 0) {
+        return;
+    }
+
+    if (!input || input[0] == '\0') {
+        strlcpy(out, SD_MOUNT_POINT, len);
+    } else if (strncmp(input, SD_MOUNT_POINT, k_sd_mount_len) == 0) {
+        strlcpy(out, input, len);
+    } else if (input[0] == '/') {
+        snprintf(out, len, "%s%s", SD_MOUNT_POINT, input);
+    } else {
+        snprintf(out, len, "%s/%s", SD_MOUNT_POINT, input);
+    }
+
+    // Normalize trailing slash (keep root "/sdcard" intact).
+    size_t n = strlen(out);
+    while (n > k_sd_mount_len && out[n - 1] == '/') {
+        out[n - 1] = '\0';
+        n--;
+    }
+}
+
+static bool resolve_component_case(const char *dir_path, const char *name, char *resolved, size_t len)
+{
+    if (!dir_path || !name || !resolved || len == 0) {
+        return false;
+    }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        strlcpy(resolved, name, len);
+        return true;
+    }
+
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        return false;
+    }
+
+    struct dirent *ent;
+    int ci_matches = 0;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, name) == 0) {
+            strlcpy(resolved, ent->d_name, len);
+            closedir(dir);
+            return true;
+        }
+        if (strcasecmp(ent->d_name, name) == 0) {
+            if (ci_matches == 0) {
+                strlcpy(resolved, ent->d_name, len);
+            }
+            ci_matches++;
+        }
+    }
+
+    closedir(dir);
+    return (ci_matches == 1);
+}
+
+static void resolve_sd_path(const char *input, char *out, size_t len)
+{
+    if (!out || len == 0) {
+        return;
+    }
+
+    char normalized[192] = {0};
+    normalize_sd_path(input, normalized, sizeof(normalized));
+    if (strncmp(normalized, SD_MOUNT_POINT, k_sd_mount_len) != 0) {
+        strlcpy(out, normalized, len);
+        return;
+    }
+    if (normalized[k_sd_mount_len] == '\0') {
+        strlcpy(out, normalized, len);
+        return;
+    }
+
+    char current[192] = {0};
+    strlcpy(current, SD_MOUNT_POINT, sizeof(current));
+
+    char remainder[192] = {0};
+    strlcpy(remainder, normalized + k_sd_mount_len, sizeof(remainder));
+
+    char *saveptr = NULL;
+    char *token = strtok_r(remainder, "/", &saveptr);
+    while (token) {
+        char resolved_name[96] = {0};
+        const char *name_to_use = token;
+        if (resolve_component_case(current, token, resolved_name, sizeof(resolved_name))) {
+            name_to_use = resolved_name;
+        }
+        if (strlen(current) + 1 + strlen(name_to_use) < sizeof(current)) {
+            strlcat(current, "/", sizeof(current));
+            strlcat(current, name_to_use, sizeof(current));
+        }
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    strlcpy(out, current, len);
 }
 
 static esp_err_t sd_mount(void)
@@ -104,11 +217,11 @@ static esp_err_t sd_mount(void)
 
     esp_err_t ret = esp_vfs_fat_sdmmc_mount(SD_MOUNT_POINT, &host, &slot_config, &mount_config, &sd_card);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+        EL_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(ret));
         return ret;
     }
     sd_mounted = true;
-    ESP_LOGI(TAG, "SD mounted at %s", SD_MOUNT_POINT);
+    EL_LOGI(TAG, "SD mounted at %s", SD_MOUNT_POINT);
     sdmmc_card_print_info(stdout, sd_card);
 
     ensure_dirs(SD_LOG_DIR);
@@ -120,17 +233,17 @@ static esp_err_t sd_mount(void)
 esp_err_t sd_driver_format(void)
 {
     ESP_RETURN_ON_ERROR(sd_mount(), TAG, "mount before format");
-    ESP_LOGW(TAG, "Formatting SD card (destructive)...");
+    EL_LOGW(TAG, "Formatting SD card (destructive)...");
     esp_err_t ret = esp_vfs_fat_sdcard_format(SD_MOUNT_POINT, sd_card);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Format failed: %s", esp_err_to_name(ret));
+        EL_LOGE(TAG, "Format failed: %s", esp_err_to_name(ret));
         return ret;
     }
     esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, sd_card);
     sd_mounted = false;
     sd_card = NULL;
     ESP_RETURN_ON_ERROR(sd_mount(), TAG, "remount after format");
-    ESP_LOGI(TAG, "Format complete and remounted");
+    EL_LOGI(TAG, "Format complete and remounted");
     return ESP_OK;
 }
 
@@ -198,28 +311,46 @@ static void handle_log(const char *line)
     make_date_stamp(date, sizeof(date));
     char path[192];
     snprintf(path, sizeof(path), "%s/%s.log", SD_LOG_DIR, date);
+    sd_io_guard_begin();
     FILE *f = fopen(path, "a");
     if (!f) {
+        sd_io_guard_end();
         ESP_LOGE(TAG, "Open log failed (%s)", strerror(errno));
         return;
     }
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
+    sd_io_guard_begin();
     fprintf(f, "[%02d:%02d:%02d] %s\n", tm.tm_hour, tm.tm_min, tm.tm_sec, line);
+    sd_io_guard_end();
+    sd_io_guard_begin();
     fclose(f);
+    sd_io_guard_end();
     sd_log_rotate();
 }
 
 static void handle_list(const char *path)
 {
-    const char *p = (path && path[0]) ? path : SD_MOUNT_POINT;
-    DIR *dir = opendir(p);
-    if (!dir) {
-        printf("SD list: failed to open %s (%s)\n", p, strerror(errno));
+    char resolved[192] = {0};
+    resolve_sd_path(path, resolved, sizeof(resolved));
+
+    struct stat st = {0};
+    if (stat(resolved, &st) != 0) {
+        printf("SD list: path not found %s (%s)\n", resolved, strerror(errno));
         return;
     }
-    printf("Listing %s\n", p);
+    if (!S_ISDIR(st.st_mode)) {
+        printf("SD list: %s is not a directory\n", resolved);
+        return;
+    }
+
+    DIR *dir = opendir(resolved);
+    if (!dir) {
+        printf("SD list: failed to open %s (%s)\n", resolved, strerror(errno));
+        return;
+    }
+    printf("Listing %s\n", resolved);
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
         printf("  %s\n", ent->d_name);
@@ -230,42 +361,80 @@ static void handle_list(const char *path)
 static void handle_read(const char *path)
 {
     if (!path) return;
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        printf("SD read: failed to open %s (%s)\n", path, strerror(errno));
+    char resolved[192] = {0};
+    resolve_sd_path(path, resolved, sizeof(resolved));
+
+    struct stat st = {0};
+    if (stat(resolved, &st) != 0) {
+        printf("SD read: failed to open %s (%s)\n", resolved, strerror(errno));
         return;
     }
-    printf("---- %s ----\n", path);
+    if (S_ISDIR(st.st_mode)) {
+        printf("SD read: %s is a directory; use sd_list %s\n", resolved, resolved);
+        return;
+    }
+
+    sd_io_guard_begin();
+    FILE *f = fopen(resolved, "r");
+    if (!f) {
+        sd_io_guard_end();
+        printf("SD read: failed to open %s (%s)\n", resolved, strerror(errno));
+        return;
+    }
+    sd_io_guard_end();
+    printf("---- %s ----\n", resolved);
     char buf[256];
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
         fwrite(buf, 1, n, stdout);
     }
     printf("\n---- end ----\n");
+    sd_io_guard_begin();
     fclose(f);
+    sd_io_guard_end();
 }
 
 static void handle_delete(const char *path)
 {
     if (!path) return;
-    int r = unlink(path);
+    char resolved[192] = {0};
+    resolve_sd_path(path, resolved, sizeof(resolved));
+
+    struct stat st = {0};
+    if (stat(resolved, &st) != 0) {
+        printf("Delete failed %s (%s)\n", resolved, strerror(errno));
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        printf("Delete failed %s (is a directory)\n", resolved);
+        return;
+    }
+
+    int r = unlink(resolved);
     if (r == 0) {
-        printf("Deleted %s\n", path);
+        printf("Deleted %s\n", resolved);
     } else {
-        printf("Delete failed %s (%s)\n", path, strerror(errno));
+        printf("Delete failed %s (%s)\n", resolved, strerror(errno));
     }
 }
 
 static void handle_wifi_save(const char *ssid, const char *pass)
 {
     ensure_dirs(SD_WIFI_DIR);
+    sd_io_guard_begin();
     FILE *f = fopen(SD_WIFI_FILE, "w");
     if (!f) {
+        sd_io_guard_end();
         printf("WiFi save failed (%s)\n", strerror(errno));
         return;
     }
+    sd_io_guard_end();
+    sd_io_guard_begin();
     fprintf(f, "ssid=%s\npass=%s\n", ssid, pass);
+    sd_io_guard_end();
+    sd_io_guard_begin();
     fclose(f);
+    sd_io_guard_end();
     printf("WiFi credentials saved to %s\n", SD_WIFI_FILE);
 }
 
@@ -322,7 +491,7 @@ esp_err_t sd_driver_init(void)
         sd_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "SD driver ready");
+    EL_LOGI(TAG, "SD driver ready");
     return ESP_OK;
 }
 
@@ -334,7 +503,7 @@ static esp_err_t enqueue_job(const sd_job_t *job)
             return ret;
         }
     }
-    if (xQueueSend(sd_queue, job, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xQueueSend(sd_queue, job, 0) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -390,3 +559,4 @@ esp_err_t sd_driver_save_wifi_credentials(const char *ssid, const char *password
     strlcpy(job.data, password, sizeof(job.data));
     return enqueue_job(&job);
 }
+

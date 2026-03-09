@@ -1,4 +1,5 @@
 #include "BAT_Driver.h"
+#include "eldra_logging.h"
 
 const static char *ADC_TAG = "ADC";
 
@@ -15,7 +16,7 @@ static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel,
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     if (!calibrated) {
-        ESP_LOGI(ADC_TAG, "calibration scheme version is %s", "Curve Fitting");
+        EL_LOGI(ADC_TAG, "calibration scheme version is %s", "Curve Fitting");
         adc_cali_curve_fitting_config_t cali_config = {
             .unit_id = unit,
             .chan = channel,
@@ -31,7 +32,7 @@ static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel,
 
 #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
     if (!calibrated) {
-        ESP_LOGI(ADC_TAG, "calibration scheme version is %s", "Line Fitting");
+        EL_LOGI(ADC_TAG, "calibration scheme version is %s", "Line Fitting");
         adc_cali_line_fitting_config_t cali_config = {
             .unit_id = unit,
             .atten = atten,
@@ -46,11 +47,11 @@ static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel,
 
     *out_handle = handle;
     if (ret == ESP_OK) {
-        ESP_LOGI(ADC_TAG, "Calibration Success");
+        EL_LOGI(ADC_TAG, "Calibration Success");
     } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-        ESP_LOGW(ADC_TAG, "eFuse not burnt, skip software calibration");
+        EL_LOGW(ADC_TAG, "eFuse not burnt, skip software calibration");
     } else {
-        ESP_LOGE(ADC_TAG, "Invalid arg or no memory");
+        EL_LOGE(ADC_TAG, "Invalid arg or no memory");
     }
 
     return calibrated;
@@ -59,11 +60,11 @@ static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel,
 // static void example_adc_calibration_deinit(adc_cali_handle_t handle)
 // {
 // #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-//     ESP_LOGI(ADC_TAG, "deregister %s calibration scheme", "Curve Fitting");
+//     EL_LOGI(ADC_TAG, "deregister %s calibration scheme", "Curve Fitting");
 //     ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
 
 // #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-//     ESP_LOGI(ADC_TAG, "deregister %s calibration scheme", "Line Fitting");
+//     EL_LOGI(ADC_TAG, "deregister %s calibration scheme", "Line Fitting");
 //     ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
 // #endif
 // }
